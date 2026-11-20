@@ -1,61 +1,51 @@
 import React, { useState } from 'react';
+import type { EntityColorRegistry } from '../types/sales';
 import type { ProvinceMetricRow } from '../lib/analytics/calculations';
 import { formatCAD, formatNumber, formatPct } from '../lib/analytics/calculations';
+import {
+  getEntityColor,
+  getSemanticColors,
+  getSequentialScaleColor,
+} from '../lib/theme/chartTheme';
 
 interface CanadaProvinceMapProps {
   data: ProvinceMetricRow[];
   selectedProvinces: string[];
   onToggleProvince: (province: string) => void;
+  theme: 'dark' | 'light';
+  entityColors: EntityColorRegistry;
 }
 
 interface ProvinceTile {
   code: string;
   name: string;
-  col: number;
-  row: number;
   path: string;
   labelX: number;
   labelY: number;
 }
 
-// Stylized geographic cartogram + choropleth geometry for Canadian provinces & territories
 const CANADA_PROVINCES_GEO: ProvinceTile[] = [
-  { code: 'YT', name: 'Yukon', col: 0, row: 0, path: 'M 40 35 L 105 22 L 122 108 L 48 112 Z', labelX: 80, labelY: 74 },
-  { code: 'NT', name: 'Northwest Territories', col: 1, row: 0, path: 'M 105 22 L 210 26 L 215 112 L 122 108 Z', labelX: 162, labelY: 74 },
-  { code: 'NU', name: 'Nunavut', col: 2, row: 0, path: 'M 210 26 L 348 34 L 330 132 L 215 112 Z', labelX: 274, labelY: 82 },
-  { code: 'BC', name: 'British Columbia', col: 0, row: 1, path: 'M 48 112 L 130 108 L 125 225 L 44 212 Z', labelX: 86, labelY: 168 },
-  { code: 'AB', name: 'Alberta', col: 1, row: 1, path: 'M 130 108 L 195 111 L 192 232 L 125 225 Z', labelX: 160, labelY: 174 },
-  { code: 'SK', name: 'Saskatchewan', col: 2, row: 1, path: 'M 195 111 L 258 114 L 256 236 L 192 232 Z', labelX: 225, labelY: 176 },
-  { code: 'MB', name: 'Manitoba', col: 3, row: 1, path: 'M 258 114 L 325 128 L 318 242 L 256 236 Z', labelX: 288, labelY: 184 },
-  { code: 'ON', name: 'Ontario', col: 4, row: 1, path: 'M 325 128 L 430 156 L 440 272 L 382 282 L 318 242 Z', labelX: 382, labelY: 218 },
-  { code: 'QC', name: 'Quebec', col: 5, row: 1, path: 'M 430 156 L 542 126 L 560 232 L 440 272 Z', labelX: 492, labelY: 204 },
-  { code: 'NL', name: 'Newfoundland and Labrador', col: 6, row: 0, path: 'M 542 126 L 622 106 L 636 184 L 560 194 Z', labelX: 590, labelY: 155 },
-  { code: 'NB', name: 'New Brunswick', col: 5, row: 2, path: 'M 526 244 L 575 234 L 580 275 L 530 282 Z', labelX: 554, labelY: 262 },
-  { code: 'PE', name: 'Prince Edward Island', col: 6, row: 2, path: 'M 582 225 L 626 220 L 628 246 L 584 249 Z', labelX: 605, labelY: 237 },
-  { code: 'NS', name: 'Nova Scotia', col: 6, row: 3, path: 'M 580 256 L 638 248 L 632 292 L 582 294 Z', labelX: 608, labelY: 274 },
+  { code: 'YT', name: 'Yukon', path: 'M 40 35 L 105 22 L 122 108 L 48 112 Z', labelX: 80, labelY: 74 },
+  { code: 'NT', name: 'Northwest Territories', path: 'M 105 22 L 210 26 L 215 112 L 122 108 Z', labelX: 162, labelY: 74 },
+  { code: 'NU', name: 'Nunavut', path: 'M 210 26 L 348 34 L 330 132 L 215 112 Z', labelX: 274, labelY: 82 },
+  { code: 'BC', name: 'British Columbia', path: 'M 48 112 L 130 108 L 125 225 L 44 212 Z', labelX: 86, labelY: 168 },
+  { code: 'AB', name: 'Alberta', path: 'M 130 108 L 195 111 L 192 232 L 125 225 Z', labelX: 160, labelY: 174 },
+  { code: 'SK', name: 'Saskatchewan', path: 'M 195 111 L 258 114 L 256 236 L 192 232 Z', labelX: 225, labelY: 176 },
+  { code: 'MB', name: 'Manitoba', path: 'M 258 114 L 325 128 L 318 242 L 256 236 Z', labelX: 288, labelY: 184 },
+  { code: 'ON', name: 'Ontario', path: 'M 325 128 L 430 156 L 440 272 L 382 282 L 318 242 Z', labelX: 382, labelY: 218 },
+  { code: 'QC', name: 'Quebec', path: 'M 430 156 L 542 126 L 560 232 L 440 272 Z', labelX: 492, labelY: 204 },
+  { code: 'NL', name: 'Newfoundland and Labrador', path: 'M 542 126 L 622 106 L 636 184 L 560 194 Z', labelX: 590, labelY: 155 },
+  { code: 'NB', name: 'New Brunswick', path: 'M 526 244 L 575 234 L 580 275 L 530 282 Z', labelX: 554, labelY: 262 },
+  { code: 'PE', name: 'Prince Edward Island', path: 'M 582 225 L 626 220 L 628 246 L 584 249 Z', labelX: 605, labelY: 237 },
+  { code: 'NS', name: 'Nova Scotia', path: 'M 580 256 L 638 248 L 632 292 L 582 294 Z', labelX: 608, labelY: 274 },
 ];
-
-function interpolateBrandColor(ratio: number): string {
-  // Smooth blend from deep slate-navy (#1D3E61) -> teal (#26E6D0) -> purple (#B740DE)
-  if (ratio <= 0) return 'rgba(148, 163, 184, 0.16)';
-  if (ratio < 0.5) {
-    const t = ratio / 0.5;
-    const r = Math.round(29 + (38 - 29) * t);
-    const g = Math.round(62 + (230 - 62) * t);
-    const b = Math.round(97 + (208 - 97) * t);
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-  const t = (ratio - 0.5) / 0.5;
-  const r = Math.round(38 + (183 - 38) * t);
-  const g = Math.round(230 + (64 - 230) * t);
-  const b = Math.round(208 + (222 - 208) * t);
-  return `rgb(${r}, ${g}, ${b})`;
-}
 
 export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
   data,
   selectedProvinces,
   onToggleProvince,
+  theme,
+  entityColors,
 }) => {
   const [hovered, setHovered] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'map' | 'tiles'>('map');
@@ -63,17 +53,20 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
   const metricByProv = new Map(data.map((d) => [d.province, d]));
   const maxSales = Math.max(...data.map((d) => d.sales), 1);
   const hoveredMetric = hovered ? metricByProv.get(hovered) : null;
+  const semantic = getSemanticColors(theme);
+
+  const gradCss =
+    theme === 'dark'
+      ? 'linear-gradient(90deg, #16314D 0%, #26E6D0 50%, #B740DE 100%)'
+      : 'linear-gradient(90deg, #DCE7F3 0%, #0FB8A5 50%, #9928BF 100%)';
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
-          <span>Lower Sales</span>
-          <div
-            className="h-2.5 w-28 rounded-full"
-            style={{ background: 'linear-gradient(90deg, #1D3E61 0%, #26E6D0 50%, #B740DE 100%)' }}
-          />
-          <span>Higher Sales</span>
+          <span>Low</span>
+          <div className="h-2.5 w-28 rounded-full" style={{ background: gradCss }} />
+          <span>High</span>
         </div>
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 p-0.5 dark:border-white/10">
           <button
@@ -111,7 +104,13 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
           >
             {CANADA_PROVINCES_GEO.map((geo) => {
               const m = metricByProv.get(geo.name);
-              const ratio = m ? Math.max(0.12, m.sales / maxSales) : 0;
+              const ratio = m ? Math.max(0.08, m.sales / maxSales) : 0;
+              const { fill, text } = m
+                ? getSequentialScaleColor(ratio, theme)
+                : {
+                    fill: theme === 'dark' ? '#122840' : '#E2E8F0',
+                    text: (theme === 'dark' ? '#FFFFFF' : '#0F2238') as '#0F2238' | '#FFFFFF',
+                  };
               const isSelected = selectedProvinces.includes(geo.name);
               const isHovered = hovered === geo.name;
               return (
@@ -120,13 +119,23 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                   onMouseEnter={() => setHovered(geo.name)}
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => m && onToggleProvince(geo.name)}
-                  className={m ? 'cursor-pointer transition-opacity' : 'opacity-50'}
+                  className={m ? 'cursor-pointer transition-opacity' : 'opacity-60'}
                 >
                   <path
                     d={geo.path}
-                    fill={interpolateBrandColor(ratio)}
-                    stroke={isSelected ? '#FFFFFF' : isHovered ? '#26E6D0' : 'rgba(15,34,56,0.55)'}
-                    strokeWidth={isSelected ? 2.5 : isHovered ? 2 : 1.2}
+                    fill={fill}
+                    stroke={
+                      isSelected
+                        ? theme === 'dark'
+                          ? '#FFFFFF'
+                          : '#0F2238'
+                        : isHovered
+                        ? '#26E6D0'
+                        : theme === 'dark'
+                        ? '#0F2238'
+                        : '#FFFFFF'
+                    }
+                    strokeWidth={isSelected ? 2.5 : isHovered ? 2 : 1.4}
                     style={{ transition: 'fill 200ms ease, stroke-width 150ms ease' }}
                   />
                   <text
@@ -134,7 +143,8 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                     y={geo.labelY}
                     textAnchor="middle"
                     dominantBaseline="central"
-                    className="pointer-events-none fill-white text-[11px] font-bold drop-shadow"
+                    fill={text}
+                    className="pointer-events-none text-[11px] font-bold"
                   >
                     {geo.code}
                   </text>
@@ -143,7 +153,9 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                       x={geo.labelX}
                       y={geo.labelY + 14}
                       textAnchor="middle"
-                      className="pointer-events-none fill-white/90 font-mono text-[9px] font-medium"
+                      fill={text}
+                      fillOpacity={0.92}
+                      className="pointer-events-none font-mono text-[9px] font-semibold"
                     >
                       {formatCAD(m.sales, true)}
                     </text>
@@ -172,7 +184,16 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                   </div>
                   <div className="flex justify-between">
                     <span className="font-sans">Growth</span>
-                    <span>
+                    <span
+                      style={{
+                        color:
+                          hoveredMetric.growthPct === null
+                            ? semantic.neutral
+                            : hoveredMetric.growthPct >= 0
+                            ? semantic.positive
+                            : semantic.negative,
+                      }}
+                    >
                       {hoveredMetric.growthPct !== null
                         ? `${hoveredMetric.growthPct >= 0 ? '+' : ''}${(hoveredMetric.growthPct * 100).toFixed(1)}%`
                         : 'N/A'}
@@ -194,6 +215,7 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
           {data.map((prov) => {
             const ratio = prov.sales / maxSales;
             const active = selectedProvinces.includes(prov.province);
+            const provColor = getEntityColor(entityColors, 'provinces', prov.province, theme);
             return (
               <button
                 key={prov.province}
@@ -206,19 +228,35 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-semibold text-[#0F2238] dark:text-white">
-                    {prov.province}
-                  </span>
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                      style={{ backgroundColor: provColor }}
+                    />
+                    <span className="truncate text-xs font-semibold text-[#0F2238] dark:text-white">
+                      {prov.province}
+                    </span>
+                  </div>
                   <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
                     {formatPct(prov.sharePct)}
                   </span>
                 </div>
-                <div className="mt-1.5 font-mono text-base font-bold text-[#0F2238] tabular-nums dark:text-[#26E6D0]">
+                <div className="mt-1.5 font-mono text-base font-bold text-[#0F2238] tabular-nums dark:text-white">
                   {formatCAD(prov.sales, true)}
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                   <span>{formatNumber(prov.quantity)} units</span>
-                  <span>
+                  <span
+                    style={{
+                      color:
+                        prov.growthPct === null
+                          ? semantic.neutral
+                          : prov.growthPct >= 0
+                          ? semantic.positive
+                          : semantic.negative,
+                    }}
+                    className="font-mono font-medium"
+                  >
                     {prov.growthPct !== null
                       ? `${prov.growthPct >= 0 ? '+' : ''}${(prov.growthPct * 100).toFixed(1)}%`
                       : '—'}
@@ -226,8 +264,11 @@ export const CanadaProvinceMap: React.FC<CanadaProvinceMapProps> = ({
                 </div>
                 <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
                   <div
-                    className="h-full rounded-full brand-gradient"
-                    style={{ width: `${Math.max(6, Math.round(ratio * 100))}%` }}
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.max(6, Math.round(ratio * 100))}%`,
+                      backgroundColor: provColor,
+                    }}
                   />
                 </div>
               </button>

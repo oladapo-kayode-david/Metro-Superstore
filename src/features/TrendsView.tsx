@@ -2,9 +2,11 @@ import React, { useMemo, useState } from 'react';
 import {
   Area,
   Bar,
+  Cell,
   ComposedChart,
   Legend,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -19,17 +21,33 @@ import {
   formatMonthLabel,
   formatNumber,
 } from '../lib/analytics/calculations';
+import {
+  getDivergingScaleColor,
+  getPaletteColor,
+  getSequentialScaleColor,
+} from '../lib/theme/chartTheme';
 import { ChartCard } from '../components/ChartCard';
 
 interface TrendsViewProps {
   filteredFacts: FactSale[];
   filters: GlobalFilters;
   models: AllModelResults;
+  theme: 'dark' | 'light';
 }
 
-export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, models }) => {
+export const TrendsView: React.FC<TrendsViewProps> = ({
+  filteredFacts,
+  filters,
+  models,
+  theme,
+}) => {
   const [overlayMode, setOverlayMode] = useState<'quantity' | 'mom' | 'yoy'>('quantity');
   const useRecomp = filters.useRecomputedFinancials;
+
+  const primaryTeal = getPaletteColor(0, theme);
+  const secondaryPurple = getPaletteColor(1, theme);
+  const amber = getPaletteColor(2, theme);
+  const skyBlue = getPaletteColor(3, theme);
 
   const monthly = useMemo(() => {
     const rows = aggregateMonthlyTrend(filteredFacts, useRecomp).map((m) => ({
@@ -65,6 +83,13 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
     return rows;
   }, [filteredFacts, useRecomp, models.forecast]);
 
+  const maxAbsVariance = useMemo(() => {
+    const vals = monthly.map((m) =>
+      Math.abs((overlayMode === 'mom' ? m.momPctDisplay : m.yoyPctDisplay) ?? 0)
+    );
+    return Math.max(...vals, 10);
+  }, [monthly, overlayMode]);
+
   const dowHeatmap = useMemo(
     () => aggregateDayOfWeekByMonthHeatmap(filteredFacts, useRecomp),
     [filteredFacts, useRecomp]
@@ -75,13 +100,13 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
     [filteredFacts, useRecomp]
   );
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   return (
     <div className="space-y-6">
       <ChartCard
         title="Monthly Sales Performance & Growth Dynamics"
-        subtitle="Switch right-axis overlay between Units Sold, MoM % Growth, and YoY % Growth"
+        subtitle="Switch right-axis overlay between Units Sold, MoM % Variance, and YoY % Variance (diverging scale #FF5C7A ← #A0AEC0 → #26E6D0)"
         exportName="trends_monthly_growth"
         isEmpty={monthly.length === 0}
         minHeight={340}
@@ -121,8 +146,8 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
           <ComposedChart data={monthly} margin={{ top: 12, right: 18, left: 6, bottom: 8 }}>
             <defs>
               <linearGradient id="trendAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#26E6D0" stopOpacity={0.42} />
-                <stop offset="95%" stopColor="#B740DE" stopOpacity={0.04} />
+                <stop offset="5%" stopColor={primaryTeal} stopOpacity={0.38} />
+                <stop offset="95%" stopColor={secondaryPurple} stopOpacity={0.04} />
               </linearGradient>
             </defs>
             <XAxis
@@ -154,6 +179,14 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 fontSize: 12,
                 color: '#F1F5F9',
               }}
+              formatter={(v: unknown, name?: string | number) => {
+                const label = String(name ?? '');
+                if (label.includes('%')) return [`${v}%`, label];
+                if (label.includes('CAD') || label.includes('Rolling') || label.includes('Forecast')) {
+                  return [formatCAD(Number(v)), label];
+                }
+                return [formatNumber(Number(v)), label];
+              }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             <Area
@@ -161,7 +194,7 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
               type="monotone"
               dataKey="sales"
               name="Net Sales (CAD)"
-              stroke="#26E6D0"
+              stroke={primaryTeal}
               strokeWidth={2.5}
               fill="url(#trendAreaGrad)"
               animationDuration={320}
@@ -171,7 +204,7 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
               type="monotone"
               dataKey="rolling3m"
               name="3-Month Rolling Avg"
-              stroke="#63F0DF"
+              stroke={amber}
               strokeWidth={1.8}
               strokeDasharray="4 4"
               dot={false}
@@ -184,10 +217,10 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 type="monotone"
                 dataKey="forecast"
                 name="ML Forecast (CAD)"
-                stroke="#B740DE"
+                stroke={secondaryPurple}
                 strokeWidth={2.5}
                 strokeDasharray="6 3"
-                dot={{ r: 3, fill: '#B740DE' }}
+                dot={{ r: 3, fill: secondaryPurple }}
                 connectNulls
                 animationDuration={320}
               />
@@ -198,37 +231,61 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 type="monotone"
                 dataKey="quantity"
                 name="Units Sold"
-                stroke="#D07AEF"
+                stroke={skyBlue}
                 strokeWidth={2}
                 dot={false}
                 animationDuration={320}
               />
             )}
-            {overlayMode === 'mom' && (
-              <Line
+            {overlayMode !== 'quantity' && (
+              <ReferenceLine
                 yAxisId="right"
-                type="monotone"
-                dataKey="momPctDisplay"
-                name="MoM Growth %"
-                stroke="#B740DE"
-                strokeWidth={2}
-                dot={{ r: 2.5 }}
-                connectNulls
-                animationDuration={320}
+                y={0}
+                stroke="rgba(160,174,192,0.5)"
+                strokeDasharray="3 3"
               />
             )}
-            {overlayMode === 'yoy' && (
-              <Line
+            {overlayMode === 'mom' && (
+              <Bar
                 yAxisId="right"
-                type="monotone"
-                dataKey="yoyPctDisplay"
-                name="YoY Growth %"
-                stroke="#B740DE"
-                strokeWidth={2}
-                dot={{ r: 2.5 }}
-                connectNulls
+                dataKey="momPctDisplay"
+                name="MoM Variance %"
+                barSize={14}
+                radius={[4, 4, 0, 0]}
                 animationDuration={320}
-              />
+              >
+                {monthly.map((m) => {
+                  const norm =
+                    m.momPctDisplay !== null ? m.momPctDisplay / maxAbsVariance : 0;
+                  return (
+                    <Cell
+                      key={m.yearMonth}
+                      fill={getDivergingScaleColor(norm, theme)}
+                    />
+                  );
+                })}
+              </Bar>
+            )}
+            {overlayMode === 'yoy' && (
+              <Bar
+                yAxisId="right"
+                dataKey="yoyPctDisplay"
+                name="YoY Variance %"
+                barSize={14}
+                radius={[4, 4, 0, 0]}
+                animationDuration={320}
+              >
+                {monthly.map((m) => {
+                  const norm =
+                    m.yoyPctDisplay !== null ? m.yoyPctDisplay / maxAbsVariance : 0;
+                  return (
+                    <Cell
+                      key={m.yearMonth}
+                      fill={getDivergingScaleColor(norm, theme)}
+                    />
+                  );
+                })}
+              </Bar>
             )}
           </ComposedChart>
         </ResponsiveContainer>
@@ -282,7 +339,9 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 }}
                 formatter={(v: unknown, name?: string | number) => {
                   const label = String(name ?? '');
-                  return label.includes('Revenue') ? [formatCAD(Number(v)), label] : [String(v ?? ''), label];
+                  return label.includes('Revenue')
+                    ? [formatCAD(Number(v)), label]
+                    : [String(v ?? ''), label];
                 }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -290,7 +349,7 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 yAxisId="left"
                 dataKey="netRevenue"
                 name="Net Revenue (CAD)"
-                fill="#26E6D0"
+                fill={primaryTeal}
                 radius={[6, 6, 0, 0]}
                 animationDuration={320}
               />
@@ -299,9 +358,9 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 type="monotone"
                 dataKey="avgUnits"
                 name="Avg Units / Txn"
-                stroke="#B740DE"
+                stroke={secondaryPurple}
                 strokeWidth={2.5}
-                dot={{ r: 3.5, fill: '#B740DE' }}
+                dot={{ r: 3.5, fill: secondaryPurple }}
                 animationDuration={320}
               />
             </ComposedChart>
@@ -311,7 +370,7 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
         {/* Day-of-Week x Month Heatmap */}
         <ChartCard
           title="Day-of-Week × Month Sales Heatmap"
-          subtitle="Net Sales (CAD) intensity across calendar days and months"
+          subtitle="Sequential scale (#16314D → #26E6D0 → #B740DE) across calendar days and months"
           exportName="dow_month_heatmap"
           isEmpty={dowHeatmap.maxVal === 0}
           tableData={dowHeatmap.days.map((d) => ({
@@ -342,18 +401,16 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                     {dowHeatmap.monthNames.map((m) => {
                       const val = dowHeatmap.matrix[day][m] ?? 0;
                       const ratio = dowHeatmap.maxVal > 0 ? val / dowHeatmap.maxVal : 0;
-                      const bg =
-                        ratio <= 0.02
-                          ? 'rgba(148,163,184,0.12)'
-                          : ratio < 0.55
-                          ? `rgba(38, 230, 208, ${0.18 + ratio * 0.9})`
-                          : `rgba(183, 64, 222, ${0.35 + (ratio - 0.5) * 1.1})`;
+                      const cellColors = getSequentialScaleColor(ratio, theme);
                       return (
                         <td
                           key={m}
                           title={`${day} in ${m}: ${formatCAD(val)}`}
-                          style={{ backgroundColor: bg }}
-                          className="h-8 rounded-md font-mono text-[10px] tabular-nums text-[#0F2238] dark:text-white"
+                          style={{
+                            backgroundColor: cellColors.fill,
+                            color: cellColors.text,
+                          }}
+                          className="h-8 rounded-md font-mono text-[10px] font-medium tabular-nums"
                         >
                           {val > 0 ? formatCAD(val, true).replace('CA$', '') : '—'}
                         </td>
@@ -363,6 +420,19 @@ export const TrendsView: React.FC<TrendsViewProps> = ({ filteredFacts, filters, 
                 ))}
               </tbody>
             </table>
+            <div className="mt-3 flex items-center justify-end gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+              <span>Low</span>
+              <span
+                className="h-2 w-28 rounded-full"
+                style={{
+                  background:
+                    theme === 'dark'
+                      ? 'linear-gradient(90deg, #16314D 0%, #26E6D0 50%, #B740DE 100%)'
+                      : 'linear-gradient(90deg, #DCE7F3 0%, #0FB8A5 50%, #9928BF 100%)',
+                }}
+              />
+              <span>High</span>
+            </div>
           </div>
         </ChartCard>
       </div>

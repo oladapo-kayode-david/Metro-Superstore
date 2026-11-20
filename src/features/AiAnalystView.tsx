@@ -25,6 +25,7 @@ import type {
 } from '../types/sales';
 import { askAiAnalyst } from '../lib/ai/tools';
 import { formatCAD } from '../lib/analytics/calculations';
+import { getPaletteColor } from '../lib/theme/chartTheme';
 
 interface AiAnalystViewProps {
   filteredFacts: FactSale[];
@@ -32,6 +33,7 @@ interface AiAnalystViewProps {
   models: AllModelResults;
   messages: ChatMessage[];
   aiEnabled: boolean;
+  theme?: 'dark' | 'light';
   onToggleAi: (enabled: boolean) => void;
   onAddMessage: (msg: ChatMessage) => Promise<void>;
   onClearHistory: () => Promise<void>;
@@ -48,7 +50,8 @@ const STARTER_PROMPTS = [
   'What anomalies were flagged in unit prices and discounts?',
 ];
 
-const MiniVizRenderer: React.FC<{ viz: ChatMiniViz }> = ({ viz }) => {
+const MiniVizRenderer: React.FC<{ viz: ChatMiniViz; theme: 'dark' | 'light' }> = ({ viz, theme }) => {
+  const seriesColor = getPaletteColor(0, theme);
   if (viz.type === 'table' || !viz.xKey || !viz.yKey) {
     return (
       <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200/80 dark:border-white/10">
@@ -121,7 +124,7 @@ const MiniVizRenderer: React.FC<{ viz: ChatMiniViz }> = ({ viz }) => {
                   color: '#F1F5F9',
                 }}
               />
-              <Line type="monotone" dataKey={viz.yKey} stroke="#26E6D0" strokeWidth={2} dot={{ r: 2.5 }} />
+              <Line type="monotone" dataKey={viz.yKey} stroke={seriesColor} strokeWidth={2} dot={{ r: 2.5 }} />
             </LineChart>
           ) : (
             <BarChart data={viz.rows}>
@@ -146,7 +149,7 @@ const MiniVizRenderer: React.FC<{ viz: ChatMiniViz }> = ({ viz }) => {
                   color: '#F1F5F9',
                 }}
               />
-              <Bar dataKey={viz.yKey} fill="#26E6D0" radius={[4, 4, 0, 0]} />
+              <Bar dataKey={viz.yKey} fill={seriesColor} radius={[4, 4, 0, 0]} />
             </BarChart>
           )}
         </ResponsiveContainer>
@@ -161,6 +164,7 @@ export const AiAnalystView: React.FC<AiAnalystViewProps> = ({
   models,
   messages,
   aiEnabled,
+  theme = 'dark',
   onToggleAi,
   onAddMessage,
   onClearHistory,
@@ -310,7 +314,7 @@ export const AiAnalystView: React.FC<AiAnalystViewProps> = ({
             >
               <div className="whitespace-pre-line">{m.text}</div>
 
-              {m.viz && <MiniVizRenderer viz={m.viz} />}
+              {m.viz && <MiniVizRenderer viz={m.viz} theme={theme} />}
 
               {m.role === 'assistant' && !m.error && (
                 <div className="mt-3 space-y-2 border-t border-slate-200/70 pt-2.5 dark:border-white/10">

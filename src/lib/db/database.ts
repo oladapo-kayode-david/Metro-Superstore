@@ -40,6 +40,13 @@ export const DEFAULT_FILTERS: GlobalFilters = {
   useRecomputedFinancials: true,
 };
 
+export const DEFAULT_ENTITY_COLORS = {
+  categories: {},
+  stores: {},
+  provinces: {},
+  salespeople: {},
+};
+
 export const DEFAULT_SETTINGS: AppSettings = {
   id: 'singleton',
   theme: 'dark',
@@ -49,6 +56,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   useRecomputedFinancials: true,
   onboardingCompleted: false,
   filters: DEFAULT_FILTERS,
+  entityColors: DEFAULT_ENTITY_COLORS,
 };
 
 class SalesIntelligenceDB extends Dexie {
@@ -100,6 +108,12 @@ export async function loadSettings(): Promise<AppSettings> {
       ...DEFAULT_FILTERS,
       ...(existing.filters ?? {}),
     },
+    entityColors: {
+      categories: { ...(existing.entityColors?.categories ?? {}) },
+      stores: { ...(existing.entityColors?.stores ?? {}) },
+      provinces: { ...(existing.entityColors?.provinces ?? {}) },
+      salespeople: { ...(existing.entityColors?.salespeople ?? {}) },
+    },
   };
 }
 
@@ -112,6 +126,12 @@ export async function saveSettings(partial: Partial<AppSettings>): Promise<AppSe
     filters: {
       ...current.filters,
       ...(partial.filters ?? {}),
+    },
+    entityColors: {
+      categories: { ...(current.entityColors?.categories ?? {}), ...(partial.entityColors?.categories ?? {}) },
+      stores: { ...(current.entityColors?.stores ?? {}), ...(partial.entityColors?.stores ?? {}) },
+      provinces: { ...(current.entityColors?.provinces ?? {}), ...(partial.entityColors?.provinces ?? {}) },
+      salespeople: { ...(current.entityColors?.salespeople ?? {}), ...(partial.entityColors?.salespeople ?? {}) },
     },
   };
   await db.settings.put(next);

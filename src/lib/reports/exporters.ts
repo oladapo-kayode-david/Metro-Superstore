@@ -292,8 +292,8 @@ export async function exportExecutiveReportPdf(params: {
 
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(30);
-  doc.text('Sales Intelligence Platform', 48, 150);
+  doc.setFontSize(26);
+  doc.text('Metro Superstore Sales Intelligence', 48, 150);
   doc.setFontSize(16);
   doc.setTextColor(38, 230, 208);
   doc.text('Executive Performance, ML Forecast & Retention Report', 48, 180);

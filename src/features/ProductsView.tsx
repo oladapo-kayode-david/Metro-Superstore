@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { FactSale, GlobalFilters } from '../types/sales';
+import type { EntityColorRegistry, FactSale, GlobalFilters } from '../types/sales';
 import {
   aggregateCategories,
   aggregateCategoryByMonthHeatmap,
@@ -22,23 +22,41 @@ import {
   formatNumber,
   formatPct,
 } from '../lib/analytics/calculations';
-import { CHART_PALETTE, ChartCard } from '../components/ChartCard';
+import {
+  getEntityColor,
+  getEntityColorIndex,
+  getPaletteColor,
+  getPatternId,
+  getSequentialScaleColor,
+  getSurfaceColor,
+  groupTopSlicesWithOther,
+  OTHER_SLICE_COLOR,
+} from '../lib/theme/chartTheme';
+import { ChartCard, SeriesPatternDefs } from '../components/ChartCard';
 import { VirtualTable, type VirtualColumn } from '../components/VirtualTable';
 
 interface ProductsViewProps {
   filteredFacts: FactSale[];
   filters: GlobalFilters;
+  theme: 'dark' | 'light';
+  entityColors: EntityColorRegistry;
   onCrossFilter: (field: 'products' | 'categories', value: string) => void;
 }
 
 export const ProductsView: React.FC<ProductsViewProps> = ({
   filteredFacts,
   filters,
+  theme,
+  entityColors,
   onCrossFilter,
 }) => {
   const [rankMode, setRankMode] = useState<'top' | 'bottom'>('top');
   const [limitN, setLimitN] = useState<number>(10);
   const useRecomp = filters.useRecomputedFinancials;
+
+  const surfaceColor = getSurfaceColor(theme);
+  const primaryTeal = getPaletteColor(0, theme);
+  const secondaryPurple = getPaletteColor(1, theme);
 
   const allProducts = useMemo(
     () => aggregateProductPareto(filteredFacts, useRecomp),
@@ -55,17 +73,49 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     [filteredFacts, useRecomp]
   );
 
+  const categorySlices = useMemo(
+    () => groupTopSlicesWithOther(categories, (c) => c.category, 8),
+    [categories]
+  );
+
+  const totalCategorySales = useMemo(
+    () => categories.reduce((acc, c) => acc + c.sales, 0),
+    [categories]
+  );
+
   const catHeatmap = useMemo(
     () => aggregateCategoryByMonthHeatmap(filteredFacts, useRecomp),
     [filteredFacts, useRecomp]
   );
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const distinctDisplayedCats = useMemo(
+    () => new Set(displayedProducts.map((p) => p.category)).size,
+    [displayedProducts]
+  );
+  const useParetoPatterns = distinctDisplayedCats > 6;
+  const useDonutPatterns = categorySlices.length > 6;
+
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   const columns: Array<VirtualColumn<Record<string, unknown>>> = [
     { key: 'rank', label: '#', align: 'right', width: '50px' },
     { key: 'product', label: 'Product' },
-    { key: 'category', label: 'Category' },
+    {
+      key: 'category',
+      label: 'Category',
+      render: (r) => {
+        const cat = String(r.category);
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: getEntityColor(entityColors, 'categories', cat, theme) }}
+            />
+            <span>{cat}</span>
+          </span>
+        );
+      },
+    },
     {
       key: 'sales',
       label: 'Sales (CAD)',
@@ -103,7 +153,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     <div className="space-y-6">
       <ChartCard
         title={`${rankMode === 'top' ? 'Top' : 'Bottom'} ${limitN} Products by Net Sales (Pareto)`}
-        subtitle="Horizontal ranked bars with cumulative share line · Click any bar to filter"
+        subtitle="Bars coloured by fixed Category token with cumulative share line · Click any bar to filter"
         exportName="products_pareto"
         isEmpty={displayedProducts.length === 0}
         minHeight={340}
@@ -165,6 +215,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             }))}
             margin={{ top: 8, right: 24, left: 20, bottom: 8 }}
           >
+            {useParetoPatterns && <SeriesPatternDefs prefix="prod-pareto" theme={theme} />}
             <XAxis
               xAxisId="sales"
               type="number"
@@ -208,25 +259,34 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
               xAxisId="sales"
               dataKey="sales"
               name="Net Sales (CAD)"
-              fill="#26E6D0"
+              fill={primaryTeal}
               radius={[0, 6, 6, 0]}
               barSize={18}
               animationDuration={320}
               className="cursor-pointer"
               onClick={(entry) => {
-                const prod = (entry as unknown as { product?: string; payload?: { product?: string } }).product ??
+                const prod =
+                  (entry as unknown as { product?: string; payload?: { product?: string } }).product ??
                   (entry as unknown as { payload?: { product?: string } }).payload?.product;
                 if (prod) onCrossFilter('products', prod);
               }}
-            />
+            >
+              {displayedProducts.map((p) => {
+                const catIdx = getEntityColorIndex(entityColors, 'categories', p.category);
+                const fill = useParetoPatterns
+                  ? `url(#${getPatternId('prod-pareto', catIdx)})`
+                  : getEntityColor(entityColors, 'categories', p.category, theme);
+                return <Cell key={p.product} fill={fill} />;
+              })}
+            </Bar>
             <Line
               xAxisId="cum"
               type="monotone"
               dataKey="cumPctNum"
               name="Cumulative %"
-              stroke="#B740DE"
+              stroke={secondaryPurple}
               strokeWidth={2.2}
-              dot={{ r: 3, fill: '#B740DE' }}
+              dot={{ r: 3, fill: secondaryPurple }}
               animationDuration={320}
             />
           </ComposedChart>
@@ -237,53 +297,113 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         <ChartCard
           className="lg:col-span-5"
           title="Category Revenue Mix"
-          subtitle="Donut breakdown · Click category to filter"
+          subtitle="Max 8 + Other · Fixed category colours · Click slice to filter"
           exportName="category_donut"
           isEmpty={categories.length === 0}
+          tableData={categories.map((c) => ({
+            Category: c.category,
+            'Sales (CAD)': c.sales,
+            'Share %': `${(c.sharePct * 100).toFixed(1)}%`,
+          }))}
         >
-          <ResponsiveContainer width="100%" height={270}>
-            <PieChart>
-              <Pie
-                data={categories}
-                dataKey="sales"
-                nameKey="category"
-                cx="50%"
-                cy="50%"
-                innerRadius={58}
-                outerRadius={96}
-                paddingAngle={2}
-                label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
-                labelLine={false}
-                animationDuration={320}
-                onClick={(entry) => {
-                  const cat = (entry as unknown as { category?: string; payload?: { category?: string } }).category ??
-                    (entry as unknown as { payload?: { category?: string } }).payload?.category;
-                  if (cat) onCrossFilter('categories', cat);
-                }}
-                className="cursor-pointer text-[11px]"
-              >
-                {categories.map((c, idx) => (
-                  <Cell key={c.category} fill={CHART_PALETTE[idx % CHART_PALETTE.length]} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#0F2238',
-                  borderColor: 'rgba(255,255,255,0.14)',
-                  borderRadius: 12,
-                  fontSize: 12,
-                  color: '#F1F5F9',
-                }}
-                formatter={(v: unknown) => [formatCAD(Number(v)), 'Net Sales']}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  {useDonutPatterns && <SeriesPatternDefs prefix="prod-cat" theme={theme} />}
+                  <Pie
+                    data={categorySlices}
+                    dataKey="sales"
+                    nameKey="label"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={56}
+                    outerRadius={92}
+                    stroke={surfaceColor}
+                    strokeWidth={2}
+                    animationDuration={320}
+                    onClick={(entry) => {
+                      const slice = entry as unknown as {
+                        label?: string;
+                        isOther?: boolean;
+                        payload?: { label?: string; isOther?: boolean };
+                      };
+                      const label = slice.label ?? slice.payload?.label;
+                      const isOther = slice.isOther ?? slice.payload?.isOther;
+                      if (label && !isOther) onCrossFilter('categories', label);
+                    }}
+                    className="cursor-pointer"
+                  >
+                    {categorySlices.map((slice) => {
+                      const baseColor = slice.isOther
+                        ? OTHER_SLICE_COLOR
+                        : getEntityColor(entityColors, 'categories', slice.label, theme);
+                      const patIdx = getEntityColorIndex(entityColors, 'categories', slice.label);
+                      const fill =
+                        useDonutPatterns && !slice.isOther
+                          ? `url(#${getPatternId('prod-cat', patIdx)})`
+                          : baseColor;
+                      return <Cell key={slice.label} fill={fill} />;
+                    })}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#0F2238',
+                      borderColor: 'rgba(255,255,255,0.14)',
+                      borderRadius: 12,
+                      fontSize: 12,
+                      color: '#F1F5F9',
+                    }}
+                    formatter={(v: unknown, name?: string | number) => [
+                      formatCAD(Number(v)),
+                      String(name ?? 'Net Sales'),
+                    ]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              {/* Centered Total */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Total
+                </span>
+                <span className="mt-0.5 font-mono text-sm font-bold text-[#0F2238] tabular-nums dark:text-white">
+                  {formatCAD(totalCategorySales, true)}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-center gap-x-3 gap-y-1.5 text-[11px]">
+              {categorySlices.map((slice) => (
+                <button
+                  key={slice.label}
+                  type="button"
+                  disabled={slice.isOther}
+                  onClick={() => !slice.isOther && onCrossFilter('categories', slice.label)}
+                  className="inline-flex items-center gap-1.5 text-slate-600 hover:text-[#0F2238] dark:text-slate-300 dark:hover:text-white"
+                >
+                  <span
+                    className="h-2.5 w-2.5 rounded-sm"
+                    style={{
+                      backgroundColor: slice.isOther
+                        ? OTHER_SLICE_COLOR
+                        : getEntityColor(entityColors, 'categories', slice.label, theme),
+                    }}
+                  />
+                  <span>
+                    {slice.isOther ? `Other (${slice.count})` : slice.label}{' '}
+                    <span className="font-mono tabular-nums opacity-75">
+                      {Math.round(slice.sharePct * 100)}%
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </ChartCard>
 
         <ChartCard
           className="lg:col-span-7"
           title="Category × Month Revenue Heatmap"
-          subtitle="Last 12 active months across product categories (CAD)"
+          subtitle="Sequential scale (#16314D → #26E6D0 → #B740DE) across last 12 active months (CAD)"
           exportName="category_month_heatmap"
           isEmpty={catHeatmap.categories.length === 0}
         >
@@ -308,26 +428,30 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       <button
                         type="button"
                         onClick={() => onCrossFilter('categories', cat)}
-                        className="hover:text-[#26E6D0] hover:underline"
+                        className="inline-flex items-center gap-1.5 hover:underline"
                       >
-                        {cat}
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{
+                            backgroundColor: getEntityColor(entityColors, 'categories', cat, theme),
+                          }}
+                        />
+                        <span>{cat}</span>
                       </button>
                     </td>
                     {catHeatmap.months.map((ym) => {
                       const val = catHeatmap.matrix[cat]?.[ym] ?? 0;
                       const ratio = catHeatmap.maxVal > 0 ? val / catHeatmap.maxVal : 0;
-                      const bg =
-                        ratio <= 0.02
-                          ? 'rgba(148,163,184,0.12)'
-                          : ratio < 0.55
-                          ? `rgba(38, 230, 208, ${0.18 + ratio * 0.9})`
-                          : `rgba(183, 64, 222, ${0.35 + (ratio - 0.5) * 1.1})`;
+                      const cellColors = getSequentialScaleColor(ratio, theme);
                       return (
                         <td
                           key={ym}
                           title={`${cat} (${ym}): ${formatCAD(val)}`}
-                          style={{ backgroundColor: bg }}
-                          className="h-9 rounded-md font-mono text-[10px] tabular-nums text-[#0F2238] dark:text-white"
+                          style={{
+                            backgroundColor: cellColors.fill,
+                            color: cellColors.text,
+                          }}
+                          className="h-9 rounded-md font-mono text-[10px] font-medium tabular-nums"
                         >
                           {val > 0 ? formatCAD(val, true).replace('CA$', '') : '—'}
                         </td>
@@ -337,6 +461,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 ))}
               </tbody>
             </table>
+            <div className="mt-3 flex items-center justify-end gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+              <span>Low</span>
+              <span
+                className="h-2 w-28 rounded-full"
+                style={{
+                  background:
+                    theme === 'dark'
+                      ? 'linear-gradient(90deg, #16314D 0%, #26E6D0 50%, #B740DE 100%)'
+                      : 'linear-gradient(90deg, #DCE7F3 0%, #0FB8A5 50%, #9928BF 100%)',
+                }}
+              />
+              <span>High</span>
+            </div>
           </div>
         </ChartCard>
       </div>

@@ -2,14 +2,22 @@ import React, { useState } from 'react';
 import { ArrowDownRight, ArrowUpRight, HelpCircle } from 'lucide-react';
 import { Line, LineChart, ResponsiveContainer } from 'recharts';
 import type { KpiMetric } from '../types/sales';
+import { getPaletteColor, getSemanticColors } from '../lib/theme/chartTheme';
 
 interface KpiCardProps {
   metric: KpiMetric;
   invertDeltaColor?: boolean;
+  theme?: 'dark' | 'light';
 }
 
-export const KpiCard: React.FC<KpiCardProps> = ({ metric, invertDeltaColor = false }) => {
+export const KpiCard: React.FC<KpiCardProps> = ({
+  metric,
+  invertDeltaColor = false,
+  theme = 'dark',
+}) => {
   const [showFormula, setShowFormula] = useState(false);
+  const semantic = getSemanticColors(theme);
+  const primaryTeal = getPaletteColor(0, theme);
 
   const delta = metric.deltaPct;
   const yoy = metric.yoyDeltaPct;
@@ -30,7 +38,7 @@ export const KpiCard: React.FC<KpiCardProps> = ({ metric, invertDeltaColor = fal
           onMouseEnter={() => setShowFormula(true)}
           onMouseLeave={() => setShowFormula(false)}
           aria-label={`How is ${metric.label} calculated?`}
-          className="rounded p-0.5 text-slate-400 transition-colors hover:text-[#0FA696] dark:hover:text-[#26E6D0]"
+          className="rounded p-0.5 text-slate-400 transition-colors hover:text-[#0FB8A5] dark:hover:text-[#26E6D0]"
         >
           <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -68,7 +76,7 @@ export const KpiCard: React.FC<KpiCardProps> = ({ metric, invertDeltaColor = fal
                 <Line
                   type="monotone"
                   dataKey="v"
-                  stroke="#26E6D0"
+                  stroke={primaryTeal}
                   strokeWidth={2}
                   dot={false}
                   isAnimationActive={false}
@@ -83,11 +91,8 @@ export const KpiCard: React.FC<KpiCardProps> = ({ metric, invertDeltaColor = fal
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-100 pt-2.5 text-xs dark:border-white/10">
           {delta !== null && delta !== undefined && (
             <span
-              className={`inline-flex items-center gap-0.5 font-mono font-medium tabular-nums ${
-                isGood
-                  ? 'text-emerald-600 dark:text-[#26E6D0]'
-                  : 'text-rose-600 dark:text-rose-400'
-              }`}
+              style={{ color: isGood ? semantic.positive : semantic.negative }}
+              className="inline-flex items-center gap-0.5 font-mono font-medium tabular-nums"
             >
               {delta >= 0 ? (
                 <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />

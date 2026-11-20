@@ -2,21 +2,49 @@ import React, { useRef, useState } from 'react';
 import { Download, Maximize2, Table as TableIcon, X } from 'lucide-react';
 import { downloadElementAsPng, exportRowsToCsv, exportRowsToJson } from '../lib/reports/exporters';
 
+import {
+  EXTENDED_CATEGORICAL_DARK,
+  getCategoricalPalette,
+  getPatternId,
+} from '../lib/theme/chartTheme';
+
 /**
- * Harmonious extended palette derived strictly from primary #26E6D0 (teal)
- * and secondary #B740DE (purple), plus neutral slates.
+ * Re-exported Extended Categorical Palette from the shared chart theme file.
  */
-export const CHART_PALETTE = [
-  '#26E6D0', // Primary Teal
-  '#B740DE', // Secondary Purple
-  '#17B8A6', // Deep Teal
-  '#8F2BB8', // Deep Purple
-  '#63F0DF', // Light Teal
-  '#D07AEF', // Soft Purple
-  '#4E8FA8', // Slate Teal Bridge
-  '#7B6BBF', // Muted Indigo Bridge
-  '#64748B', // Neutral Slate
-];
+export const CHART_PALETTE = EXTENDED_CATEGORICAL_DARK;
+
+/**
+ * Reusable SVG <defs> patterns for colour-blind accessibility whenever >6 series share one chart.
+ */
+export const SeriesPatternDefs: React.FC<{ prefix: string; theme: 'dark' | 'light' }> = ({
+  prefix,
+  theme,
+}) => {
+  const palette = getCategoricalPalette(theme);
+  const ink = theme === 'dark' ? 'rgba(15,34,56,0.34)' : 'rgba(255,255,255,0.35)';
+
+  return (
+    <defs>
+      {palette.map((color, idx) => {
+        const id = getPatternId(prefix, idx);
+        const variant = idx % 5;
+        return (
+          <pattern key={id} id={id} width="8" height="8" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill={color} />
+            {variant === 1 && (
+              <path d="M-2,2 l4,-4 M0,8 l8,-8 M6,10 l4,-4" stroke={ink} strokeWidth="1.4" />
+            )}
+            {variant === 2 && <circle cx="4" cy="4" r="1.4" fill={ink} />}
+            {variant === 3 && <path d="M0,4 l8,0" stroke={ink} strokeWidth="1.4" />}
+            {variant === 4 && (
+              <path d="M4,0 l0,8 M0,4 l8,0" stroke={ink} strokeWidth="1.1" />
+            )}
+          </pattern>
+        );
+      })}
+    </defs>
+  );
+};
 
 interface ChartCardProps {
   title: string;

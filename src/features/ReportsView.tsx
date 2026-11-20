@@ -199,7 +199,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               Schedule-Ready Executive Brief
             </div>
             <h2 className="mt-1 font-display text-xl font-bold text-[#0F2238] dark:text-white">
-              Sales Intelligence Summary Report
+              Metro Superstore Sales Intelligence — Executive Report
             </h2>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Coverage: {bounds.min || '—'} to {bounds.max || '—'} · {filteredFacts.length.toLocaleString()} transactions · Currency: CAD

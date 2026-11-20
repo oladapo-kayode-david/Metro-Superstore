@@ -37,13 +37,15 @@ import {
   trainSalesForecastModel,
   trainSegmentationModel,
 } from '../lib/ml/models';
-import { CHART_PALETTE, ChartCard } from '../components/ChartCard';
+import { getPaletteColor, getSemanticColors } from '../lib/theme/chartTheme';
+import { ChartCard } from '../components/ChartCard';
 
 interface ModelLabViewProps {
   filteredFacts: FactSale[];
   dimDates: DimDate[];
   filters: GlobalFilters;
   models: AllModelResults;
+  theme: 'dark' | 'light';
   onUpdateModels: (updater: (prev: AllModelResults) => AllModelResults) => void;
   onNotify: (msg: string, tone?: 'success' | 'error' | 'info') => void;
 }
@@ -55,9 +57,13 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
   dimDates,
   filters,
   models,
+  theme,
   onUpdateModels,
   onNotify,
 }) => {
+  const semantic = getSemanticColors(theme);
+  const primaryTeal = getPaletteColor(0, theme);
+  const secondaryPurple = getPaletteColor(1, theme);
   const [activeModel, setActiveModel] = useState<ModelSubTab>('forecast');
   const [trainingKey, setTrainingKey] = useState<string | null>(null);
 
@@ -187,7 +193,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
     }
   };
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   const renderGovernanceFooter = (params: {
     trainedAt: string;
@@ -495,7 +501,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         dataKey="band95"
                         name="95% Confidence Band"
                         stroke="none"
-                        fill="#B740DE"
+                        fill={secondaryPurple}
                         fillOpacity={0.14}
                         animationDuration={320}
                       />
@@ -504,7 +510,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         dataKey="band80"
                         name="80% Confidence Band"
                         stroke="none"
-                        fill="#26E6D0"
+                        fill={primaryTeal}
                         fillOpacity={0.22}
                         animationDuration={320}
                       />
@@ -512,7 +518,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         type="monotone"
                         dataKey="actual"
                         name="Actual Sales"
-                        stroke="#26E6D0"
+                        stroke={primaryTeal}
                         strokeWidth={2.5}
                         dot={{ r: 2.5 }}
                         animationDuration={320}
@@ -521,7 +527,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         type="monotone"
                         dataKey="predicted"
                         name="Model Fit / Forecast"
-                        stroke="#B740DE"
+                        stroke={secondaryPurple}
                         strokeWidth={2.5}
                         strokeDasharray="5 3"
                         dot={{ r: 2.5 }}
@@ -531,7 +537,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         type="monotone"
                         dataKey="naive"
                         name="Naive Baseline (Holdout)"
-                        stroke="#64748B"
+                        stroke={semantic.neutral}
                         strokeWidth={1.8}
                         strokeDasharray="3 3"
                         dot={false}
@@ -636,7 +642,12 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                           <td className="px-3 py-2 text-right font-mono tabular-nums">{a.observed}</td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500">{a.expected}</td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums">
-                            <span className={a.severity === 'High' ? 'font-semibold text-rose-500' : 'text-amber-500'}>
+                            <span
+                              style={{
+                                color: a.severity === 'High' ? semantic.negative : semantic.warning,
+                              }}
+                              className="font-semibold"
+                            >
                               {a.score.toFixed(2)} ({a.severity})
                             </span>
                           </td>
@@ -757,7 +768,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                       yAxisId="left"
                       dataKey="netRevenue"
                       name="Actual Net Revenue (CAD)"
-                      fill="#26E6D0"
+                      fill={primaryTeal}
                       radius={[6, 6, 0, 0]}
                       animationDuration={320}
                     />
@@ -766,7 +777,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                       type="monotone"
                       dataKey="avgUnits"
                       name="Avg Units / Txn"
-                      stroke="#B740DE"
+                      stroke={secondaryPurple}
                       strokeWidth={2.5}
                       dot={{ r: 3.5 }}
                       animationDuration={320}
@@ -849,8 +860,8 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                           key={cp.tier}
                           name={`${cp.tier} (${cp.count})`}
                           dataKey={cp.tier}
-                          stroke={CHART_PALETTE[idx % CHART_PALETTE.length]}
-                          fill={CHART_PALETTE[idx % CHART_PALETTE.length]}
+                          stroke={getPaletteColor(idx, theme)}
+                          fill={getPaletteColor(idx, theme)}
                           fillOpacity={0.22}
                           animationDuration={320}
                         />
@@ -894,13 +905,16 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                             <td className="px-3 py-2 font-medium text-[#0F2238] dark:text-white">{e.name}</td>
                             <td className="px-3 py-2 font-semibold">
                               <span
-                                className={
-                                  e.tier === 'Star'
-                                    ? 'text-emerald-600 dark:text-[#26E6D0]'
-                                    : e.tier === 'At-Risk'
-                                    ? 'text-rose-500'
-                                    : 'text-slate-600 dark:text-slate-300'
-                                }
+                                style={{
+                                  color:
+                                    e.tier === 'Star'
+                                      ? semantic.positive
+                                      : e.tier === 'At-Risk'
+                                      ? semantic.negative
+                                      : e.tier === 'Developing'
+                                      ? semantic.warning
+                                      : semantic.neutral,
+                                }}
                               >
                                 {e.tier}
                               </span>
@@ -1000,7 +1014,7 @@ export const ModelLabView: React.FC<ModelLabViewProps> = ({
                         }}
                         formatter={(v: unknown) => [`${v}x`, 'Lift']}
                       />
-                      <Bar dataKey="lift" fill="#B740DE" radius={[0, 6, 6, 0]} animationDuration={320} />
+                      <Bar dataKey="lift" fill={secondaryPurple} radius={[0, 6, 6, 0]} animationDuration={320} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartCard>

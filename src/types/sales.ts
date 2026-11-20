@@ -137,6 +137,13 @@ export interface GlobalFilters {
   useRecomputedFinancials: boolean;
 }
 
+export interface EntityColorRegistry {
+  categories: Record<string, number>;
+  stores: Record<string, number>;
+  provinces: Record<string, number>;
+  salespeople: Record<string, number>;
+}
+
 export interface AppSettings {
   id: 'singleton';
   theme: 'dark' | 'light';
@@ -146,6 +153,7 @@ export interface AppSettings {
   useRecomputedFinancials: boolean;
   onboardingCompleted: boolean;
   filters: GlobalFilters;
+  entityColors: EntityColorRegistry;
 }
 
 export interface KpiMetric {

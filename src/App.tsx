@@ -57,6 +57,7 @@ import {
   generateSampleRawSheets,
   runCleaningInWorker,
 } from './lib/etl/fileParser';
+import { reconcileEntityColors } from './lib/theme/chartTheme';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GlobalFilterBar } from './components/GlobalFilterBar';
 import { ExecutiveOverview } from './features/ExecutiveOverview';
@@ -154,7 +155,20 @@ export default function App() {
       db.recommendations.get('singleton'),
     ]);
 
-    setSettings(loadedSettings);
+    const reconciled = reconcileEntityColors(loadedSettings.entityColors, {
+      categories: Array.from(new Set(facts.map((f) => f.category).filter(Boolean))),
+      stores: Array.from(new Set(facts.map((f) => f.store).filter(Boolean))),
+      provinces: Array.from(new Set(facts.map((f) => f.province).filter(Boolean))),
+      salespeople: Array.from(new Set(facts.map((f) => f.salesperson).filter(Boolean))),
+    });
+    const effectiveSettings = reconciled.changed
+      ? { ...loadedSettings, entityColors: reconciled.registry }
+      : loadedSettings;
+    if (reconciled.changed) {
+      await saveSettings({ entityColors: reconciled.registry });
+    }
+
+    setSettings(effectiveSettings);
     setAllFacts(facts);
     setDimDate(dates);
     setDimProduct(prods);
@@ -337,9 +351,14 @@ export default function App() {
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg brand-gradient text-[#0F2238]">
                 <BarChart3 className="h-4 w-4" aria-hidden="true" />
               </div>
-              <span className="truncate font-display text-sm font-bold tracking-tight text-[#0F2238] dark:text-white">
-                Sales Intelligence
-              </span>
+              <div className="min-w-0 leading-tight">
+                <div className="truncate font-display text-xs font-bold tracking-tight text-[#0F2238] dark:text-white">
+                  Metro Superstore
+                </div>
+                <div className="truncate text-[11px] font-medium text-[#0FB8A5] dark:text-[#26E6D0]">
+                  Sales Intelligence
+                </div>
+              </div>
             </div>
           )}
           <button
@@ -392,7 +411,7 @@ export default function App() {
           >
             <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3 dark:border-white/10">
               <span className="font-display text-sm font-bold text-[#0F2238] dark:text-white">
-                Sales Intelligence
+                Metro Superstore Sales Intelligence
               </span>
               <button
                 type="button"
@@ -446,27 +465,33 @@ export default function App() {
                 <Menu className="h-5 w-5" />
               </button>
               <div className="min-w-0">
-                <h1 className="truncate font-display text-base font-bold text-[#0F2238] dark:text-white sm:text-lg">
-                  {activeNavObj.label}
+                <h1 className="truncate font-display text-base font-bold tracking-tight text-[#0F2238] dark:text-white sm:text-lg">
+                  Metro Superstore Sales Intelligence
                 </h1>
-                {allFacts.length > 0 && (
-                  <div className="hidden items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 sm:flex">
-                    <span>
-                      Data coverage: <strong className="font-mono font-medium text-[#0F2238] dark:text-slate-200">{coverageBounds.min}</strong> to{' '}
-                      <strong className="font-mono font-medium text-[#0F2238] dark:text-slate-200">{coverageBounds.max}</strong>
-                    </span>
-                    {lastUpdatedStr && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>Last updated {lastUpdatedStr}</span>
-                      </>
-                    )}
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums">
-                      {filteredFacts.length.toLocaleString()}/{allFacts.length.toLocaleString()} rows
-                    </span>
-                  </div>
-                )}
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="font-medium text-[#0FB8A5] dark:text-[#26E6D0]">
+                    {activeNavObj.label}
+                  </span>
+                  {allFacts.length > 0 && (
+                    <>
+                      <span className="hidden sm:inline" aria-hidden="true">·</span>
+                      <span className="hidden sm:inline">
+                        Data coverage: <strong className="font-mono font-medium text-[#0F2238] dark:text-slate-200">{coverageBounds.min}</strong> to{' '}
+                        <strong className="font-mono font-medium text-[#0F2238] dark:text-slate-200">{coverageBounds.max}</strong>
+                      </span>
+                      {lastUpdatedStr && (
+                        <>
+                          <span className="hidden md:inline" aria-hidden="true">·</span>
+                          <span className="hidden md:inline">Last updated {lastUpdatedStr}</span>
+                        </>
+                      )}
+                      <span className="hidden sm:inline" aria-hidden="true">·</span>
+                      <span className="hidden font-mono tabular-nums sm:inline">
+                        {filteredFacts.length.toLocaleString()}/{allFacts.length.toLocaleString()} rows
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -550,7 +575,7 @@ export default function App() {
                     Local-First Sales Analytics &amp; Machine Learning
                   </div>
                   <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-[#0F2238] dark:text-white sm:text-3xl">
-                    Welcome to Sales Intelligence Platform
+                    Welcome to Metro Superstore Sales Intelligence
                   </h2>
                   <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
                     Upload your multi-sheet sales workbook (Transactions, Stores, Products) in Excel, CSV, or
@@ -659,6 +684,8 @@ export default function App() {
                     filters={settings.filters}
                     models={models}
                     pinnedInsights={pinnedInsights}
+                    theme={settings.theme}
+                    entityColors={settings.entityColors}
                     onUnpinInsight={handleRemovePin}
                     onCrossFilter={handleCrossFilter}
                   />
@@ -668,12 +695,15 @@ export default function App() {
                     filteredFacts={filteredFacts}
                     filters={settings.filters}
                     models={models}
+                    theme={settings.theme}
                   />
                 )}
                 {activeTab === 'products' && (
                   <ProductsView
                     filteredFacts={filteredFacts}
                     filters={settings.filters}
+                    theme={settings.theme}
+                    entityColors={settings.entityColors}
                     onCrossFilter={handleCrossFilter}
                   />
                 )}
@@ -681,6 +711,8 @@ export default function App() {
                   <StoresRegionsView
                     filteredFacts={filteredFacts}
                     filters={settings.filters}
+                    theme={settings.theme}
+                    entityColors={settings.entityColors}
                     onCrossFilter={handleCrossFilter}
                   />
                 )}
@@ -688,6 +720,8 @@ export default function App() {
                   <SalespersonView
                     filteredFacts={filteredFacts}
                     filters={settings.filters}
+                    theme={settings.theme}
+                    entityColors={settings.entityColors}
                     onCrossFilter={handleCrossFilter}
                   />
                 )}
@@ -697,6 +731,7 @@ export default function App() {
                     dimDates={dimDate}
                     filters={settings.filters}
                     models={models}
+                    theme={settings.theme}
                     onUpdateModels={setModels}
                     onNotify={notify}
                   />
@@ -719,6 +754,7 @@ export default function App() {
                     models={models}
                     messages={chatMessages}
                     aiEnabled={settings.aiEnabled}
+                    theme={settings.theme}
                     onToggleAi={toggleAiEnabled}
                     onAddMessage={handleAddChatMessage}
                     onClearHistory={handleClearChat}
@@ -826,6 +862,7 @@ export default function App() {
                     models={models}
                     messages={chatMessages}
                     aiEnabled={settings.aiEnabled}
+                    theme={settings.theme}
                     onToggleAi={toggleAiEnabled}
                     onAddMessage={handleAddChatMessage}
                     onClearHistory={handleClearChat}

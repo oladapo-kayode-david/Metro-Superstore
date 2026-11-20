@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { ArrowDown, ArrowUp, Minus } from 'lucide-react';
 import {
+  Cell,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -9,7 +10,7 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts';
-import type { FactSale, GlobalFilters } from '../types/sales';
+import type { EntityColorRegistry, FactSale, GlobalFilters } from '../types/sales';
 import {
   aggregateSalespeople,
   formatCAD,
@@ -17,21 +18,33 @@ import {
   formatNumber,
   formatPct,
 } from '../lib/analytics/calculations';
+import {
+  getEntityColor,
+  getEntityColorIndex,
+  getMarkerShape,
+  getSemanticColors,
+  MARKER_SHAPES,
+} from '../lib/theme/chartTheme';
 import { ChartCard } from '../components/ChartCard';
 import { VirtualTable, type VirtualColumn } from '../components/VirtualTable';
 
 interface SalespersonViewProps {
   filteredFacts: FactSale[];
   filters: GlobalFilters;
+  theme: 'dark' | 'light';
+  entityColors: EntityColorRegistry;
   onCrossFilter: (field: 'salespeople', value: string) => void;
 }
 
 export const SalespersonView: React.FC<SalespersonViewProps> = ({
   filteredFacts,
   filters,
+  theme,
+  entityColors,
   onCrossFilter,
 }) => {
   const useRecomp = filters.useRecomputedFinancials;
+  const semantic = getSemanticColors(theme);
 
   const reps = useMemo(
     () => aggregateSalespeople(filteredFacts, useRecomp),
@@ -39,6 +52,21 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
   );
 
   const maxRepSales = useMemo(() => Math.max(...reps.map((r) => r.sales), 1), [reps]);
+
+  const useDistinctShapes = reps.length > 6;
+
+  // Group reps by marker shape bucket so >6 salespeople get distinct marker shapes + fixed entity colours
+  const shapeBuckets = useMemo(() => {
+    if (!useDistinctShapes) {
+      return [{ shape: 'circle' as const, items: reps }];
+    }
+    return MARKER_SHAPES.map((shape, shapeIdx) => ({
+      shape,
+      items: reps.filter(
+        (r) => getEntityColorIndex(entityColors, 'salespeople', r.salesperson) % MARKER_SHAPES.length === shapeIdx
+      ),
+    })).filter((b) => b.items.length > 0);
+  }, [reps, useDistinctShapes, entityColors]);
 
   const quartileSummary = useMemo(() => {
     const groups: Array<'Q1 (Top)' | 'Q2' | 'Q3' | 'Q4 (Bottom)'> = [
@@ -57,7 +85,7 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
     });
   }, [reps]);
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   const leaderboardCols: Array<VirtualColumn<Record<string, unknown>>> = [
     { key: 'rank', label: 'Rank', align: 'right', width: '58px' },
@@ -70,28 +98,68 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
         const ch = Number(r.rankChange ?? 0);
         if (ch > 0) {
           return (
-            <span className="inline-flex items-center gap-0.5 text-emerald-600 dark:text-[#26E6D0]">
+            <span
+              style={{ color: semantic.positive }}
+              className="inline-flex items-center gap-0.5 font-medium"
+            >
               <ArrowUp className="h-3 w-3" aria-hidden="true" />+{ch}
             </span>
           );
         }
         if (ch < 0) {
           return (
-            <span className="inline-flex items-center gap-0.5 text-rose-500">
+            <span
+              style={{ color: semantic.negative }}
+              className="inline-flex items-center gap-0.5 font-medium"
+            >
               <ArrowDown className="h-3 w-3" aria-hidden="true" />
               {ch}
             </span>
           );
         }
         return (
-          <span className="inline-flex items-center text-slate-400">
+          <span style={{ color: semantic.neutral }} className="inline-flex items-center">
             <Minus className="h-3 w-3" aria-hidden="true" />
           </span>
         );
       },
     },
-    { key: 'salesperson', label: 'Salesperson' },
-    { key: 'primaryStore', label: 'Primary Store' },
+    {
+      key: 'salesperson',
+      label: 'Salesperson',
+      render: (r) => {
+        const name = String(r.salesperson);
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{
+                backgroundColor: getEntityColor(entityColors, 'salespeople', name, theme),
+              }}
+            />
+            <span>{name}</span>
+          </span>
+        );
+      },
+    },
+    {
+      key: 'primaryStore',
+      label: 'Primary Store',
+      render: (r) => {
+        const st = String(r.primaryStore);
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-sm"
+              style={{
+                backgroundColor: getEntityColor(entityColors, 'stores', st, theme),
+              }}
+            />
+            <span>{st}</span>
+          </span>
+        );
+      },
+    },
     {
       key: 'sales',
       label: 'Net Sales (CAD)',
@@ -100,10 +168,14 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
       render: (r) => {
         const val = Number(r.sales);
         const pct = Math.max(4, Math.round((val / maxRepSales) * 100));
+        const repColor = getEntityColor(entityColors, 'salespeople', String(r.salesperson), theme);
         return (
           <div className="flex items-center justify-end gap-2.5">
             <div className="hidden h-2 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 sm:block">
-              <div className="h-full rounded-full brand-gradient" style={{ width: `${pct}%` }} />
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${pct}%`, backgroundColor: repColor }}
+              />
             </div>
             <span className="font-mono font-semibold tabular-nums">{formatCAD(val)}</span>
           </div>
@@ -137,7 +209,7 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
         const g = r.growthPct as number | null;
         if (g === null || g === undefined) return '—';
         return (
-          <span className={g >= 0 ? 'text-emerald-600 dark:text-[#26E6D0]' : 'text-rose-500'}>
+          <span style={{ color: g >= 0 ? semantic.positive : semantic.negative }}>
             {g >= 0 ? '+' : ''}
             {(g * 100).toFixed(1)}%
           </span>
@@ -172,10 +244,10 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
         ))}
       </div>
 
-      {/* Orders vs AOV Bubble Scatter (Bubble Size = Sales) */}
+      {/* Orders vs AOV Bubble Scatter (Fixed Entity Colours + Distinct Marker Shapes >6 reps) */}
       <ChartCard
         title="Salesperson Efficiency: Orders vs Average Order Value"
-        subtitle="Bubble size represents Total Net Sales (CAD) · Click any bubble to filter"
+        subtitle={`Fixed rep colours${useDistinctShapes ? ' + distinct marker shapes for colour-blind accessibility' : ''} · Size = Net Sales · Click any marker to filter`}
         exportName="salesperson_orders_aov_scatter"
         isEmpty={reps.length === 0}
         minHeight={320}
@@ -197,7 +269,13 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
               tick={axisStyle}
               axisLine={{ stroke: 'rgba(148,163,184,0.28)' }}
               tickLine={false}
-              label={{ value: 'Distinct Orders', position: 'insideBottom', offset: -8, fill: '#94A3B8', fontSize: 11 }}
+              label={{
+                value: 'Distinct Orders',
+                position: 'insideBottom',
+                offset: -8,
+                fill: axisStyle.fill,
+                fontSize: 11,
+              }}
             />
             <YAxis
               type="number"
@@ -207,7 +285,13 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
               axisLine={{ stroke: 'rgba(148,163,184,0.28)' }}
               tickLine={false}
               tickFormatter={(v) => formatCAD(Number(v))}
-              label={{ value: 'AOV (CAD)', angle: -90, position: 'insideLeft', fill: '#94A3B8', fontSize: 11 }}
+              label={{
+                value: 'AOV (CAD)',
+                angle: -90,
+                position: 'insideLeft',
+                fill: axisStyle.fill,
+                fontSize: 11,
+              }}
             />
             <ZAxis type="number" dataKey="sales" range={[90, 900]} name="Net Sales" />
             <Tooltip
@@ -215,11 +299,26 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
               content={({ active, payload }) => {
                 if (!active || !payload?.length) return null;
                 const d = payload[0].payload as (typeof reps)[number];
+                const idx = getEntityColorIndex(entityColors, 'salespeople', d.salesperson);
                 return (
                   <div className="rounded-xl border border-white/15 bg-[#0F2238] p-3 text-xs text-slate-100 shadow-lg">
-                    <div className="font-display font-semibold text-white">{d.salesperson}</div>
-                    <div className="text-[11px] text-slate-400">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{
+                          backgroundColor: getEntityColor(
+                            entityColors,
+                            'salespeople',
+                            d.salesperson,
+                            'dark'
+                          ),
+                        }}
+                      />
+                      <span className="font-display font-semibold text-white">{d.salesperson}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
                       {d.primaryStore} · {d.quartile}
+                      {useDistinctShapes ? ` · Marker: ${getMarkerShape(idx)}` : ''}
                     </div>
                     <div className="mt-2 space-y-1 font-mono tabular-nums">
                       <div>Sales: {formatCAD(d.sales)}</div>
@@ -231,32 +330,31 @@ export const SalespersonView: React.FC<SalespersonViewProps> = ({
                 );
               }}
             />
-            <Scatter
-              name="Top Half (Q1–Q2)"
-              data={reps.filter((r) => r.quartile === 'Q1 (Top)' || r.quartile === 'Q2')}
-              fill="#26E6D0"
-              fillOpacity={0.85}
-              animationDuration={320}
-              className="cursor-pointer"
-              onClick={(node) => {
-                const rep = (node as unknown as { salesperson?: string; payload?: { salesperson?: string } }).salesperson ??
-                  (node as unknown as { payload?: { salesperson?: string } }).payload?.salesperson;
-                if (rep) onCrossFilter('salespeople', rep);
-              }}
-            />
-            <Scatter
-              name="Bottom Half (Q3–Q4)"
-              data={reps.filter((r) => r.quartile === 'Q3' || r.quartile === 'Q4 (Bottom)')}
-              fill="#B740DE"
-              fillOpacity={0.85}
-              animationDuration={320}
-              className="cursor-pointer"
-              onClick={(node) => {
-                const rep = (node as unknown as { salesperson?: string; payload?: { salesperson?: string } }).salesperson ??
-                  (node as unknown as { payload?: { salesperson?: string } }).payload?.salesperson;
-                if (rep) onCrossFilter('salespeople', rep);
-              }}
-            />
+            {shapeBuckets.map((bucket) => (
+              <Scatter
+                key={bucket.shape}
+                name={`Shape: ${bucket.shape}`}
+                data={bucket.items}
+                shape={bucket.shape}
+                fillOpacity={0.88}
+                animationDuration={320}
+                className="cursor-pointer"
+                onClick={(node) => {
+                  const rep =
+                    (node as unknown as { salesperson?: string; payload?: { salesperson?: string } })
+                      .salesperson ??
+                    (node as unknown as { payload?: { salesperson?: string } }).payload?.salesperson;
+                  if (rep) onCrossFilter('salespeople', rep);
+                }}
+              >
+                {bucket.items.map((rep) => (
+                  <Cell
+                    key={rep.salesperson}
+                    fill={getEntityColor(entityColors, 'salespeople', rep.salesperson, theme)}
+                  />
+                ))}
+              </Scatter>
+            ))}
           </ScatterChart>
         </ResponsiveContainer>
       </ChartCard>

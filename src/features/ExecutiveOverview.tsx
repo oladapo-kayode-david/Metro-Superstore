@@ -15,7 +15,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { AllModelResults, FactSale, GlobalFilters, PinnedInsight } from '../types/sales';
+import type {
+  AllModelResults,
+  EntityColorRegistry,
+  FactSale,
+  GlobalFilters,
+  PinnedInsight,
+} from '../types/sales';
 import {
   aggregateCategories,
   aggregateChannelAndPaymentMix,
@@ -27,7 +33,18 @@ import {
   formatNumber,
   formatPct,
 } from '../lib/analytics/calculations';
-import { CHART_PALETTE, ChartCard } from '../components/ChartCard';
+import {
+  getContrastingLabelColor,
+  getEntityColor,
+  getEntityColorIndex,
+  getPaletteColor,
+  getPatternId,
+  getSemanticColors,
+  getSurfaceColor,
+  groupTopSlicesWithOther,
+  OTHER_SLICE_COLOR,
+} from '../lib/theme/chartTheme';
+import { ChartCard, SeriesPatternDefs } from '../components/ChartCard';
 import { KpiCard } from '../components/KpiCard';
 
 interface ExecutiveOverviewProps {
@@ -36,6 +53,8 @@ interface ExecutiveOverviewProps {
   filters: GlobalFilters;
   models: AllModelResults;
   pinnedInsights: PinnedInsight[];
+  theme: 'dark' | 'light';
+  entityColors: EntityColorRegistry;
   onUnpinInsight: (id: string) => void;
   onCrossFilter: (field: 'categories' | 'products' | 'channels', value: string) => void;
 }
@@ -46,12 +65,20 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
   filters,
   models,
   pinnedInsights,
+  theme,
+  entityColors,
   onUnpinInsight,
   onCrossFilter,
 }) => {
   const [showYoY, setShowYoY] = useState(false);
   const [showForecast, setShowForecast] = useState(true);
   const useRecomp = filters.useRecomputedFinancials;
+
+  const semantic = getSemanticColors(theme);
+  const surfaceColor = getSurfaceColor(theme);
+  const primaryTeal = getPaletteColor(0, theme);
+  const secondaryPurple = getPaletteColor(1, theme);
+  const skyBlue = getPaletteColor(3, theme);
 
   const kpis = useMemo(
     () => computeExecutiveKpis(allFacts, filteredFacts, filters),
@@ -92,6 +119,16 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
     [filteredFacts, useRecomp]
   );
 
+  const categorySlices = useMemo(
+    () => groupTopSlicesWithOther(categories, (c) => c.category, 8),
+    [categories]
+  );
+
+  const totalCategorySales = useMemo(
+    () => categories.reduce((acc, c) => acc + c.sales, 0),
+    [categories]
+  );
+
   const topProducts = useMemo(
     () => aggregateProductPareto(filteredFacts, useRecomp).slice(0, 8),
     [filteredFacts, useRecomp]
@@ -102,7 +139,30 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
     [filteredFacts, useRecomp]
   );
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const paymentSlices = useMemo(() => {
+    const grouped = groupTopSlicesWithOther(channelPayment.payments, (p) => p.name, 8);
+    const byName = new Map(channelPayment.payments.map((p) => [p.name, p.orders]));
+    const totalOrders = channelPayment.payments.reduce((a, p) => a + p.orders, 0);
+    let coveredOrders = 0;
+    return grouped.map((g) => {
+      if (g.isOther) {
+        return { ...g, orders: Math.max(0, totalOrders - coveredOrders) };
+      }
+      const ord = byName.get(g.label) ?? 0;
+      coveredOrders += ord;
+      return { ...g, orders: ord };
+    });
+  }, [channelPayment.payments]);
+
+  const useCategoryPatterns = categorySlices.length > 6;
+  const useChannelPatterns = channelPayment.channelNames.length > 6;
+  const distinctParetoCats = useMemo(
+    () => new Set(topProducts.map((p) => p.category)).size,
+    [topProducts]
+  );
+  const useParetoPatterns = distinctParetoCats > 6;
+
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   return (
     <div className="space-y-6">
@@ -112,6 +172,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           <KpiCard
             key={kpi.id}
             metric={kpi}
+            theme={theme}
             invertDeltaColor={kpi.id === 'total_discounts'}
           />
         ))}
@@ -139,7 +200,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
               onClick={() => setShowYoY((v) => !v)}
               className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
                 showYoY
-                  ? 'border-[#B740DE] bg-[#B740DE]/15 text-[#B740DE]'
+                  ? 'border-[#B740DE] bg-[#B740DE]/15 text-[#9928BF] dark:text-[#B740DE]'
                   : 'border-slate-300 text-slate-600 dark:border-white/15 dark:text-slate-300'
               }`}
             >
@@ -151,7 +212,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                 onClick={() => setShowForecast((v) => !v)}
                 className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
                   showForecast
-                    ? 'border-[#26E6D0] bg-[#26E6D0]/15 text-[#0FA696] dark:text-[#26E6D0]'
+                    ? 'border-[#26E6D0] bg-[#26E6D0]/15 text-[#0FB8A5] dark:text-[#26E6D0]'
                     : 'border-slate-300 text-slate-600 dark:border-white/15 dark:text-slate-300'
                 }`}
               >
@@ -165,8 +226,8 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           <ComposedChart data={monthlyData} margin={{ top: 10, right: 16, left: 6, bottom: 8 }}>
             <defs>
               <linearGradient id="execSalesGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#26E6D0" stopOpacity={0.45} />
-                <stop offset="95%" stopColor="#B740DE" stopOpacity={0.04} />
+                <stop offset="5%" stopColor={primaryTeal} stopOpacity={0.42} />
+                <stop offset="95%" stopColor={secondaryPurple} stopOpacity={0.04} />
               </linearGradient>
             </defs>
             <XAxis
@@ -213,7 +274,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
               type="monotone"
               dataKey="sales"
               name="Net Sales (CAD)"
-              stroke="#26E6D0"
+              stroke={primaryTeal}
               strokeWidth={2.5}
               fill="url(#execSalesGrad)"
               animationDuration={320}
@@ -224,7 +285,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                 type="monotone"
                 dataKey="yoySales"
                 name="Prior Year Sales (CAD)"
-                stroke="#64748B"
+                stroke={semantic.neutral}
                 strokeDasharray="4 4"
                 strokeWidth={2}
                 dot={false}
@@ -238,10 +299,10 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                 type="monotone"
                 dataKey="forecastSales"
                 name="ML Forecast (CAD)"
-                stroke="#B740DE"
+                stroke={secondaryPurple}
                 strokeDasharray="6 3"
                 strokeWidth={2.5}
-                dot={{ r: 3, fill: '#B740DE' }}
+                dot={{ r: 3, fill: secondaryPurple }}
                 connectNulls
                 animationDuration={320}
               />
@@ -251,7 +312,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
               type="monotone"
               dataKey="quantity"
               name="Units Sold"
-              stroke="#D07AEF"
+              stroke={skyBlue}
               strokeWidth={2}
               dot={false}
               animationDuration={320}
@@ -260,12 +321,12 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
         </ResponsiveContainer>
       </ChartCard>
 
-      {/* Secondary Row: Category Donut + Top Products Pareto */}
+      {/* Secondary Row: Category Donut (max 8 + Other, 2px surface gap, centered Total) + Top Products Pareto */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
         <ChartCard
           className="lg:col-span-5"
           title="Sales Share by Category"
-          subtitle="Click a slice to cross-filter across all dashboards"
+          subtitle="Fixed category colours · Top 8 + Other · Click any slice to cross-filter"
           exportName="category_share"
           isEmpty={categories.length === 0}
           tableData={categories.map((c) => ({
@@ -277,29 +338,44 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           }))}
         >
           <div className="flex flex-col items-center gap-4 sm:flex-row">
-            <div className="h-64 w-full sm:w-56">
+            <div className="relative h-64 w-full sm:w-56">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
+                  {useCategoryPatterns && <SeriesPatternDefs prefix="exec-cat" theme={theme} />}
                   <Pie
-                    data={categories}
+                    data={categorySlices}
                     dataKey="sales"
-                    nameKey="category"
+                    nameKey="label"
                     cx="50%"
                     cy="50%"
-                    innerRadius={56}
-                    outerRadius={88}
-                    paddingAngle={2}
+                    innerRadius={58}
+                    outerRadius={90}
+                    stroke={surfaceColor}
+                    strokeWidth={2}
                     animationDuration={320}
                     onClick={(entry) => {
-                      const cat = (entry as unknown as { category?: string; payload?: { category?: string } }).category ??
-                        (entry as unknown as { payload?: { category?: string } }).payload?.category;
-                      if (cat) onCrossFilter('categories', cat);
+                      const slice = entry as unknown as {
+                        label?: string;
+                        isOther?: boolean;
+                        payload?: { label?: string; isOther?: boolean };
+                      };
+                      const label = slice.label ?? slice.payload?.label;
+                      const isOther = slice.isOther ?? slice.payload?.isOther;
+                      if (label && !isOther) onCrossFilter('categories', label);
                     }}
                     className="cursor-pointer"
                   >
-                    {categories.map((entry, idx) => (
-                      <Cell key={entry.category} fill={CHART_PALETTE[idx % CHART_PALETTE.length]} />
-                    ))}
+                    {categorySlices.map((slice) => {
+                      const baseColor = slice.isOther
+                        ? OTHER_SLICE_COLOR
+                        : getEntityColor(entityColors, 'categories', slice.label, theme);
+                      const patIdx = getEntityColorIndex(entityColors, 'categories', slice.label);
+                      const fill =
+                        useCategoryPatterns && !slice.isOther
+                          ? `url(#${getPatternId('exec-cat', patIdx)})`
+                          : baseColor;
+                      return <Cell key={slice.label} fill={fill} />;
+                    })}
                   </Pie>
                   <Tooltip
                     contentStyle={{
@@ -309,38 +385,60 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                       fontSize: 12,
                       color: '#F1F5F9',
                     }}
-                    formatter={(value: unknown) => [formatCAD(Number(value)), 'Net Sales']}
+                    formatter={(value: unknown, name?: string | number) => [
+                      formatCAD(Number(value)),
+                      String(name ?? 'Net Sales'),
+                    ]}
                   />
                 </PieChart>
               </ResponsiveContainer>
+              {/* Centered Total inside Donut */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Total
+                </span>
+                <span className="mt-0.5 font-mono text-sm font-bold text-[#0F2238] tabular-nums dark:text-white">
+                  {formatCAD(totalCategorySales, true)}
+                </span>
+              </div>
             </div>
-            <div className="w-full flex-1 space-y-2.5 text-xs">
-              {categories.map((c, idx) => (
-                <button
-                  key={c.category}
-                  type="button"
-                  onClick={() => onCrossFilter('categories', c.category)}
-                  className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-slate-100 dark:hover:bg-white/5"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-sm"
-                      style={{ backgroundColor: CHART_PALETTE[idx % CHART_PALETTE.length] }}
-                    />
-                    <span className="truncate font-medium text-[#0F2238] dark:text-slate-100">
-                      {c.category}
-                    </span>
-                  </div>
-                  <div className="shrink-0 text-right font-mono tabular-nums">
-                    <span className="font-semibold text-[#0F2238] dark:text-white">
-                      {formatCAD(c.sales, true)}
-                    </span>
-                    <span className="ml-2 text-slate-500 dark:text-slate-400">
-                      {formatPct(c.sharePct)}
-                    </span>
-                  </div>
-                </button>
-              ))}
+            <div className="w-full flex-1 space-y-2 text-xs">
+              {categorySlices.map((slice) => {
+                const swatch = slice.isOther
+                  ? OTHER_SLICE_COLOR
+                  : getEntityColor(entityColors, 'categories', slice.label, theme);
+                return (
+                  <button
+                    key={slice.label}
+                    type="button"
+                    disabled={slice.isOther}
+                    onClick={() => !slice.isOther && onCrossFilter('categories', slice.label)}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                      slice.isOther
+                        ? 'cursor-default opacity-90'
+                        : 'hover:bg-slate-100 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: swatch }}
+                      />
+                      <span className="truncate font-medium text-[#0F2238] dark:text-slate-100">
+                        {slice.isOther ? `Other (${slice.count})` : slice.label}
+                      </span>
+                    </div>
+                    <div className="shrink-0 text-right font-mono tabular-nums">
+                      <span className="font-semibold text-[#0F2238] dark:text-white">
+                        {formatCAD(slice.sales, true)}
+                      </span>
+                      <span className="ml-2 text-slate-500 dark:text-slate-400">
+                        {formatPct(slice.sharePct)}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </ChartCard>
@@ -348,7 +446,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
         <ChartCard
           className="lg:col-span-7"
           title="Top Products Pareto"
-          subtitle="Net Sales (CAD) bars with cumulative % share curve · Click any product to filter"
+          subtitle="Bars coloured by fixed Category token with cumulative % share curve · Click any bar to filter"
           exportName="top_products_pareto"
           isEmpty={topProducts.length === 0}
           tableData={topProducts.map((p) => ({
@@ -368,6 +466,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
               }))}
               margin={{ top: 10, right: 16, left: 6, bottom: 26 }}
             >
+              {useParetoPatterns && <SeriesPatternDefs prefix="exec-pareto" theme={theme} />}
               <XAxis
                 dataKey="shortName"
                 tick={axisStyle}
@@ -410,24 +509,33 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                 yAxisId="left"
                 dataKey="sales"
                 name="Net Sales (CAD)"
-                fill="#26E6D0"
+                fill={primaryTeal}
                 radius={[6, 6, 0, 0]}
                 animationDuration={320}
                 className="cursor-pointer"
                 onClick={(entry) => {
-                  const prod = (entry as unknown as { product?: string; payload?: { product?: string } }).product ??
+                  const prod =
+                    (entry as unknown as { product?: string; payload?: { product?: string } }).product ??
                     (entry as unknown as { payload?: { product?: string } }).payload?.product;
                   if (prod) onCrossFilter('products', prod);
                 }}
-              />
+              >
+                {topProducts.map((p) => {
+                  const catIdx = getEntityColorIndex(entityColors, 'categories', p.category);
+                  const fill = useParetoPatterns
+                    ? `url(#${getPatternId('exec-pareto', catIdx)})`
+                    : getEntityColor(entityColors, 'categories', p.category, theme);
+                  return <Cell key={p.product} fill={fill} />;
+                })}
+              </Bar>
               <Line
                 yAxisId="right"
                 type="monotone"
                 dataKey="cumPctNum"
                 name="Cumulative %"
-                stroke="#B740DE"
+                stroke={secondaryPurple}
                 strokeWidth={2.5}
-                dot={{ r: 3, fill: '#B740DE' }}
+                dot={{ r: 3, fill: secondaryPurple }}
                 animationDuration={320}
               />
             </ComposedChart>
@@ -446,7 +554,11 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           minHeight={240}
         >
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={channelPayment.stackedChannelByQuarter} margin={{ top: 8, right: 10, left: 0, bottom: 4 }}>
+            <BarChart
+              data={channelPayment.stackedChannelByQuarter}
+              margin={{ top: 8, right: 10, left: 0, bottom: 4 }}
+            >
+              {useChannelPatterns && <SeriesPatternDefs prefix="exec-channel" theme={theme} />}
               <XAxis
                 dataKey="quarter"
                 tick={axisStyle}
@@ -476,7 +588,11 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
                   key={ch}
                   dataKey={ch}
                   stackId="a"
-                  fill={CHART_PALETTE[idx % CHART_PALETTE.length]}
+                  fill={
+                    useChannelPatterns
+                      ? `url(#${getPatternId('exec-channel', idx)})`
+                      : getPaletteColor(idx, theme)
+                  }
                   animationDuration={320}
                   className="cursor-pointer"
                   onClick={() => onCrossFilter('channels', ch)}
@@ -490,7 +606,7 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           title="Payment Method Distribution (100% Mix)"
           subtitle="Net revenue share and order volume by payment tender"
           exportName="payment_mix"
-          isEmpty={channelPayment.payments.length === 0}
+          isEmpty={paymentSlices.length === 0}
           tableData={channelPayment.payments.map((p) => ({
             'Payment Method': p.name,
             'Sales (CAD)': p.sales,
@@ -500,41 +616,57 @@ export const ExecutiveOverview: React.FC<ExecutiveOverviewProps> = ({
           minHeight={240}
         >
           <div className="flex h-full flex-col justify-center space-y-4">
-            <div className="flex h-6 w-full overflow-hidden rounded-lg">
-              {channelPayment.payments.map((p, idx) => (
-                <div
-                  key={p.name}
-                  style={{
-                    width: `${Math.max(2, p.pct * 100)}%`,
-                    backgroundColor: CHART_PALETTE[idx % CHART_PALETTE.length],
-                  }}
-                  title={`${p.name}: ${formatPct(p.pct)}`}
-                />
-              ))}
+            <div className="flex h-7 w-full overflow-hidden rounded-lg">
+              {paymentSlices.map((p, idx) => {
+                const bg = p.isOther ? OTHER_SLICE_COLOR : getPaletteColor(idx, theme);
+                const textColor = getContrastingLabelColor(bg);
+                const widthPct = Math.max(2, p.sharePct * 100);
+                return (
+                  <div
+                    key={p.label}
+                    style={{
+                      width: `${widthPct}%`,
+                      backgroundColor: bg,
+                      color: textColor,
+                      borderRight:
+                        idx < paymentSlices.length - 1 ? `2px solid ${surfaceColor}` : undefined,
+                    }}
+                    title={`${p.label}: ${formatPct(p.sharePct)}`}
+                    className="flex items-center justify-center overflow-hidden text-[10px] font-mono font-semibold tabular-nums"
+                  >
+                    {widthPct >= 11 ? `${Math.round(p.sharePct * 100)}%` : ''}
+                  </div>
+                );
+              })}
             </div>
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {channelPayment.payments.map((p, idx) => (
-                <div
-                  key={p.name}
-                  className="flex items-center justify-between rounded-xl border border-slate-200/80 px-3 py-2.5 text-xs dark:border-white/10"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="h-3 w-3 rounded-sm"
-                      style={{ backgroundColor: CHART_PALETTE[idx % CHART_PALETTE.length] }}
-                    />
-                    <span className="font-medium text-[#0F2238] dark:text-slate-100">{p.name}</span>
-                  </div>
-                  <div className="text-right font-mono tabular-nums">
-                    <div className="font-semibold text-[#0F2238] dark:text-white">
-                      {formatPct(p.pct)}
+              {paymentSlices.map((p, idx) => {
+                const swatch = p.isOther ? OTHER_SLICE_COLOR : getPaletteColor(idx, theme);
+                return (
+                  <div
+                    key={p.label}
+                    className="flex items-center justify-between rounded-xl border border-slate-200/80 px-3 py-2.5 text-xs dark:border-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="h-3 w-3 rounded-sm"
+                        style={{ backgroundColor: swatch }}
+                      />
+                      <span className="font-medium text-[#0F2238] dark:text-slate-100">
+                        {p.isOther ? `Other (${p.count})` : p.label}
+                      </span>
                     </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {formatCAD(p.sales, true)} · {formatNumber(p.orders)} ord
+                    <div className="text-right font-mono tabular-nums">
+                      <div className="font-semibold text-[#0F2238] dark:text-white">
+                        {formatPct(p.sharePct)}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {formatCAD(p.sales, true)} · {formatNumber(p.orders)} ord
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </ChartCard>

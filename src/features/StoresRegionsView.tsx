@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { FactSale, GlobalFilters } from '../types/sales';
+import type { EntityColorRegistry, FactSale, GlobalFilters } from '../types/sales';
 import {
   aggregateProvinces,
   aggregateStores,
@@ -18,22 +18,35 @@ import {
   formatNumber,
   formatPct,
 } from '../lib/analytics/calculations';
+import {
+  getEntityColor,
+  getEntityColorIndex,
+  getPaletteColor,
+  getPatternId,
+  getSemanticColors,
+} from '../lib/theme/chartTheme';
 import { CanadaProvinceMap } from '../components/CanadaProvinceMap';
-import { ChartCard } from '../components/ChartCard';
+import { ChartCard, SeriesPatternDefs } from '../components/ChartCard';
 import { VirtualTable, type VirtualColumn } from '../components/VirtualTable';
 
 interface StoresRegionsViewProps {
   filteredFacts: FactSale[];
   filters: GlobalFilters;
+  theme: 'dark' | 'light';
+  entityColors: EntityColorRegistry;
   onCrossFilter: (field: 'stores' | 'provinces', value: string) => void;
 }
 
 export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
   filteredFacts,
   filters,
+  theme,
+  entityColors,
   onCrossFilter,
 }) => {
   const useRecomp = filters.useRecomputedFinancials;
+  const semantic = getSemanticColors(theme);
+  const secondaryPurple = getPaletteColor(1, theme);
 
   const stores = useMemo(
     () => aggregateStores(filteredFacts, useRecomp),
@@ -50,11 +63,42 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
     return stores.reduce((a, s) => a + s.sales, 0) / stores.length;
   }, [stores]);
 
-  const axisStyle = { fontSize: 11, fill: '#94A3B8' };
+  const useStorePatterns = stores.length > 6;
+  const axisStyle = { fontSize: 11, fill: theme === 'dark' ? '#94A3B8' : '#475569' };
 
   const drilldownCols: Array<VirtualColumn<Record<string, unknown>>> = [
-    { key: 'province', label: 'Province' },
-    { key: 'store', label: 'Store' },
+    {
+      key: 'province',
+      label: 'Province',
+      render: (r) => {
+        const prov = String(r.province);
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: getEntityColor(entityColors, 'provinces', prov, theme) }}
+            />
+            <span>{prov}</span>
+          </span>
+        );
+      },
+    },
+    {
+      key: 'store',
+      label: 'Store',
+      render: (r) => {
+        const st = String(r.store);
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-sm"
+              style={{ backgroundColor: getEntityColor(entityColors, 'stores', st, theme) }}
+            />
+            <span>{st}</span>
+          </span>
+        );
+      },
+    },
     {
       key: 'sales',
       label: 'Sales (CAD)',
@@ -94,7 +138,7 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
         const g = r.growthPct as number | null;
         if (g === null || g === undefined) return '—';
         return (
-          <span className={g >= 0 ? 'text-emerald-600 dark:text-[#26E6D0]' : 'text-rose-500'}>
+          <span style={{ color: g >= 0 ? semantic.positive : semantic.negative }}>
             {g >= 0 ? '+' : ''}
             {(g * 100).toFixed(1)}%
           </span>
@@ -109,7 +153,7 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
         <ChartCard
           className="lg:col-span-6"
           title="Sales by Store vs Network Average"
-          subtitle={`Dashed reference line indicates network store average (${formatCAD(avgStoreSales, true)}) · Click to filter`}
+          subtitle={`Fixed store colours${useStorePatterns ? ' with SVG patterns (>6 series)' : ''} · Dashed line = network avg (${formatCAD(avgStoreSales, true)})`}
           exportName="sales_by_store"
           isEmpty={stores.length === 0}
           minHeight={330}
@@ -128,6 +172,7 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
               data={stores}
               margin={{ top: 10, right: 20, left: 16, bottom: 8 }}
             >
+              {useStorePatterns && <SeriesPatternDefs prefix="stores-bar" theme={theme} />}
               <XAxis
                 type="number"
                 tick={axisStyle}
@@ -155,13 +200,13 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
               />
               <ReferenceLine
                 x={avgStoreSales}
-                stroke="#B740DE"
+                stroke={secondaryPurple}
                 strokeDasharray="5 4"
                 strokeWidth={2}
                 label={{
                   value: 'Avg',
                   position: 'top',
-                  fill: '#B740DE',
+                  fill: secondaryPurple,
                   fontSize: 11,
                 }}
               />
@@ -173,17 +218,19 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
                 animationDuration={320}
                 className="cursor-pointer"
                 onClick={(entry) => {
-                  const st = (entry as unknown as { store?: string; payload?: { store?: string } }).store ??
+                  const st =
+                    (entry as unknown as { store?: string; payload?: { store?: string } }).store ??
                     (entry as unknown as { payload?: { store?: string } }).payload?.store;
                   if (st) onCrossFilter('stores', st);
                 }}
               >
-                {stores.map((s) => (
-                  <Cell
-                    key={s.store}
-                    fill={s.sales >= avgStoreSales ? '#26E6D0' : '#4E8FA8'}
-                  />
-                ))}
+                {stores.map((s) => {
+                  const idx = getEntityColorIndex(entityColors, 'stores', s.store);
+                  const fill = useStorePatterns
+                    ? `url(#${getPatternId('stores-bar', idx)})`
+                    : getEntityColor(entityColors, 'stores', s.store, theme);
+                  return <Cell key={s.store} fill={fill} />;
+                })}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -192,7 +239,7 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
         <ChartCard
           className="lg:col-span-6"
           title="Canadian Regional Tracking"
-          subtitle="Hover provinces for Sales, Units, Growth & Discount % · Click to cross-filter"
+          subtitle="Sequential scale (#16314D → #26E6D0 → #B740DE) · Click province to cross-filter"
           exportName="canada_regional_map"
           isEmpty={provinces.length === 0}
           minHeight={330}
@@ -208,6 +255,8 @@ export const StoresRegionsView: React.FC<StoresRegionsViewProps> = ({
           <CanadaProvinceMap
             data={provinces}
             selectedProvinces={filters.provinces}
+            theme={theme}
+            entityColors={entityColors}
             onToggleProvince={(prov) => onCrossFilter('provinces', prov)}
           />
         </ChartCard>
