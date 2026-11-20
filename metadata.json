@@ -1,0 +1,6 @@
+{
+  "name": "Sales Intelligence Platform",
+  "description": "In-browser executive sales analytics, star-schema ETL, machine learning lab, AI analyst chatbot, retention recommendations, and executive reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
