@@ -57,6 +57,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboardingCompleted: false,
   filters: DEFAULT_FILTERS,
   entityColors: DEFAULT_ENTITY_COLORS,
+  linkedGoogleSheet: null,
 };
 
 class SalesIntelligenceDB extends Dexie {
@@ -114,6 +115,7 @@ export async function loadSettings(): Promise<AppSettings> {
       provinces: { ...(existing.entityColors?.provinces ?? {}) },
       salespeople: { ...(existing.entityColors?.salespeople ?? {}) },
     },
+    linkedGoogleSheet: existing.linkedGoogleSheet ?? null,
   };
 }
 
@@ -133,6 +135,10 @@ export async function saveSettings(partial: Partial<AppSettings>): Promise<AppSe
       provinces: { ...(current.entityColors?.provinces ?? {}), ...(partial.entityColors?.provinces ?? {}) },
       salespeople: { ...(current.entityColors?.salespeople ?? {}), ...(partial.entityColors?.salespeople ?? {}) },
     },
+    linkedGoogleSheet:
+      partial.linkedGoogleSheet !== undefined
+        ? partial.linkedGoogleSheet
+        : current.linkedGoogleSheet,
   };
   await db.settings.put(next);
   return next;

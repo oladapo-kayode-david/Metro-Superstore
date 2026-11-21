@@ -1,7 +1,10 @@
 import React, { useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Database,
   Download,
   FileSpreadsheet,
@@ -20,6 +23,7 @@ import type {
   DimStore,
   FactSale,
   GlobalFilters,
+  LinkedGoogleSheet,
   UploadHistoryEntry,
 } from '../types/sales';
 import {
@@ -42,6 +46,7 @@ import {
   downloadDataQualityReport,
   downloadRejectedRowsCsv,
 } from '../lib/reports/exporters';
+import { GoogleSheetsConnector } from '../components/GoogleSheetsConnector';
 
 interface DataManagerViewProps {
   allFacts: FactSale[];
@@ -53,6 +58,23 @@ interface DataManagerViewProps {
   latestQualityReport: DataQualityReport | null;
   filters: GlobalFilters;
   dateFormatPreference: 'auto' | 'DMY' | 'MDY';
+  googleUser: User | null;
+  hasGoogleToken: boolean;
+  isSigningInGoogle: boolean;
+  syncingSheet: boolean;
+  syncProgress: { pct: number; stage: string } | null;
+  linkedGoogleSheet: LinkedGoogleSheet | null;
+  onGoogleSignIn: () => Promise<string | null>;
+  onGoogleSignOut: () => Promise<void>;
+  onLinkSpreadsheet: (spreadsheetId: string) => Promise<void>;
+  onRefreshLinkedSheet: () => Promise<void>;
+  onUnlinkSpreadsheet: () => Promise<void>;
+  onUpdateLiveSyncSettings: (patch: {
+    autoSyncEnabled?: boolean;
+    pollIntervalSeconds?: number;
+  }) => void;
+  onGoogleTokenExpired: () => void;
+  getGoogleToken: () => string | null;
   onUpdatePreferences: (patch: {
     dateFormatPreference?: 'auto' | 'DMY' | 'MDY';
     excludeOutliers?: boolean;
@@ -91,11 +113,26 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
   latestQualityReport,
   filters,
   dateFormatPreference,
+  googleUser,
+  hasGoogleToken,
+  isSigningInGoogle,
+  syncingSheet,
+  syncProgress,
+  linkedGoogleSheet,
+  onGoogleSignIn,
+  onGoogleSignOut,
+  onLinkSpreadsheet,
+  onRefreshLinkedSheet,
+  onUnlinkSpreadsheet,
+  onUpdateLiveSyncSettings,
+  onGoogleTokenExpired,
+  getGoogleToken,
   onUpdatePreferences,
   onDataMutated,
   onNotify,
 }) => {
   const [subTab, setSubTab] = useState<'ingest' | 'model' | 'quality' | 'history'>('ingest');
+  const [showManualUpload, setShowManualUpload] = useState(false);
   const [uploadMode, setUploadMode] = useState<'append' | 'merge' | 'replace'>('append');
   const [replaceConfirm, setReplaceConfirm] = useState('');
   const [clearConfirm, setClearConfirm] = useState('');
@@ -317,10 +354,10 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-slate-200/90 bg-white p-3.5 dark:border-white/10 dark:bg-[#16314D]">
         <div className="flex flex-wrap items-center gap-1.5">
           {([
-            { id: 'ingest', label: 'Upload & Cleaning' },
+            { id: 'ingest', label: 'Google Sheets & Sync' },
             { id: 'model', label: 'Data Model (Star Schema)' },
             { id: 'quality', label: 'Data Quality Report' },
-            { id: 'history', label: `Upload History (${uploadHistory.length})` },
+            { id: 'history', label: `Sync History (${uploadHistory.length})` },
           ] as const).map((t) => (
             <button
               key={t.id}
@@ -367,147 +404,183 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
         </div>
       </div>
 
-      {/* TAB 1: INGESTION & CLEANING */}
+      {/* TAB 1: GOOGLE SHEETS LIVE SYNC & CLEANING */}
       {subTab === 'ingest' && (
         <div className="space-y-5">
-          {/* Upload Mode & Cleaning Policy Switches */}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            <div className="rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D] lg:col-span-7">
-              <h3 className="font-display text-sm font-semibold text-[#0F2238] dark:text-white">
-                Ingestion Mode (Saved Permanently in IndexedDB)
-              </h3>
-              <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                {([
-                  { id: 'append', title: 'Append (Default)', desc: 'Adds new rows; skips duplicate Transaction IDs.' },
-                  { id: 'merge', title: 'Merge / Update', desc: 'Overwrites matching Transaction IDs & adds new.' },
-                  { id: 'replace', title: 'Replace All', desc: 'Replaces entire local warehouse (requires confirm).' },
-                ] as const).map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setUploadMode(m.id)}
-                    className={`rounded-xl border p-3 text-left transition-colors ${
-                      uploadMode === m.id
-                        ? 'border-[#26E6D0] bg-[#26E6D0]/10'
-                        : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-[#0F2238] dark:text-white">{m.title}</div>
-                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{m.desc}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
+          {/* Primary Data Source: Live Google Drive / Google Sheets Workbook */}
+          <GoogleSheetsConnector
+            googleUser={googleUser}
+            hasGoogleToken={hasGoogleToken}
+            isSigningIn={isSigningInGoogle}
+            syncing={syncingSheet}
+            syncProgress={syncProgress}
+            linkedSheet={linkedGoogleSheet}
+            onSignIn={onGoogleSignIn}
+            onSignOut={onGoogleSignOut}
+            onLinkSpreadsheet={onLinkSpreadsheet}
+            onRefreshLinkedSheet={onRefreshLinkedSheet}
+            onUnlinkSpreadsheet={onUnlinkSpreadsheet}
+            onUpdateLiveSyncSettings={onUpdateLiveSyncSettings}
+            onTokenExpired={onGoogleTokenExpired}
+            onNotify={onNotify}
+            getToken={getGoogleToken}
+          />
 
-            <div className="rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D] lg:col-span-5">
-              <h3 className="font-display text-sm font-semibold text-[#0F2238] dark:text-white">
-                Reconciliation &amp; Outlier Policies
-              </h3>
-              <div className="mt-3 space-y-2.5 text-xs text-slate-600 dark:text-slate-300">
-                <label className="flex cursor-pointer items-center justify-between gap-2">
-                  <span>Exclude Statistical Outliers ({flaggedOutlierCount} flagged)</span>
-                  <input
-                    type="checkbox"
-                    checked={filters.excludeOutliers}
-                    onChange={(e) => onUpdatePreferences({ excludeOutliers: e.target.checked })}
-                    className="rounded accent-[#26E6D0]"
-                  />
-                </label>
-                <label className="flex cursor-pointer items-center justify-between gap-2">
-                  <span>Use Recomputed Financials ({flaggedReconCount} diffs &gt; CA$0.01)</span>
-                  <input
-                    type="checkbox"
-                    checked={filters.useRecomputedFinancials}
-                    onChange={(e) => onUpdatePreferences({ useRecomputedFinancials: e.target.checked })}
-                    className="rounded accent-[#26E6D0]"
-                  />
-                </label>
-                <label className="flex items-center justify-between gap-2">
-                  <span>Slash Date Preference</span>
-                  <select
-                    value={dateFormatPreference}
-                    onChange={(e) =>
-                      onUpdatePreferences({
-                        dateFormatPreference: e.target.value as 'auto' | 'DMY' | 'MDY',
-                      })
-                    }
-                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-[#0F2238] dark:border-white/15 dark:bg-[#0F2238] dark:text-white"
-                  >
-                    <option value="auto">Auto-Detect</option>
-                    <option value="DMY">DD/MM/YYYY</option>
-                    <option value="MDY">MM/DD/YYYY</option>
-                  </select>
-                </label>
+          {/* Reconciliation & Cleaning Policies */}
+          <div className="rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-sm font-semibold text-[#0F2238] dark:text-white">
+                  Reconciliation &amp; Cleaning Policies
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Applied automatically every time your linked 3-worksheet Google Spreadsheet refreshes
+                </p>
               </div>
-            </div>
-          </div>
-
-          {/* Drag-and-Drop Dropzone */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              handleFilesSelected(e.dataTransfer.files);
-            }}
-            className={`flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed p-10 text-center transition-colors ${
-              dragging
-                ? 'border-[#26E6D0] bg-[#26E6D0]/10'
-                : 'border-slate-300 bg-white dark:border-white/15 dark:bg-[#16314D]'
-            }`}
-          >
-            <Upload className="h-9 w-9 text-[#26E6D0]" aria-hidden="true" />
-            <h3 className="mt-3 font-display text-base font-semibold text-[#0F2238] dark:text-white">
-              Drop Excel, CSV, TSV, JSON, or Delimited Text Files Here
-            </h3>
-            <p className="mt-1 max-w-xl text-xs text-slate-500 dark:text-slate-400">
-              Auto-detects Transactions, Stores, and Products sheets across multi-sheet workbooks (.xlsx, .xls, .xlsm) or multi-file uploads. Large files (100k+ rows) process off-thread in a Web Worker.
-            </p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".xlsx,.xls,.xlsm,.csv,.tsv,.json,.txt"
-              onChange={(e) => {
-                if (e.target.files) handleFilesSelected(e.target.files);
-                e.target.value = '';
-              }}
-              className="hidden"
-            />
-            <div className="mt-5 flex flex-wrap justify-center gap-3">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => fileInputRef.current?.click()}
-                className="rounded-lg brand-gradient px-5 py-2.5 text-xs font-semibold text-[#0F2238] disabled:opacity-50"
-              >
-                Choose Files
-              </button>
               <button
                 type="button"
                 disabled={busy}
                 onClick={handleLoadSampleDataset}
-                className="rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-medium text-[#0F2238] hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-[#0F2238] hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
               >
                 Load 24-Month Canadian Sample Dataset
               </button>
             </div>
+            <div className="mt-4 grid grid-cols-1 gap-3 text-xs text-slate-600 dark:text-slate-300 md:grid-cols-3">
+              <label className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-slate-200/80 px-3 py-2.5 dark:border-white/10">
+                <span>Exclude Statistical Outliers ({flaggedOutlierCount} flagged)</span>
+                <input
+                  type="checkbox"
+                  checked={filters.excludeOutliers}
+                  onChange={(e) => onUpdatePreferences({ excludeOutliers: e.target.checked })}
+                  className="rounded accent-[#26E6D0]"
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-slate-200/80 px-3 py-2.5 dark:border-white/10">
+                <span>Recomputed Financials ({flaggedReconCount} diffs &gt; CA$0.01)</span>
+                <input
+                  type="checkbox"
+                  checked={filters.useRecomputedFinancials}
+                  onChange={(e) => onUpdatePreferences({ useRecomputedFinancials: e.target.checked })}
+                  className="rounded accent-[#26E6D0]"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 px-3 py-2.5 dark:border-white/10">
+                <span>Slash Date Preference</span>
+                <select
+                  value={dateFormatPreference}
+                  onChange={(e) =>
+                    onUpdatePreferences({
+                      dateFormatPreference: e.target.value as 'auto' | 'DMY' | 'MDY',
+                    })
+                  }
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-[#0F2238] dark:border-white/15 dark:bg-[#0F2238] dark:text-white"
+                >
+                  <option value="auto">Auto-Detect</option>
+                  <option value="DMY">DD/MM/YYYY</option>
+                  <option value="MDY">MM/DD/YYYY</option>
+                </select>
+              </label>
+            </div>
+          </div>
 
-            {progress && (
-              <div className="mt-6 w-full max-w-md">
-                <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
-                  <span>{progress.stage}</span>
-                  <span className="font-mono">{progress.pct}%</span>
+          {/* Optional Secondary Local File Upload Fallback */}
+          <div className="rounded-[16px] border border-slate-200/90 bg-white dark:border-white/10 dark:bg-[#16314D]">
+            <button
+              type="button"
+              onClick={() => setShowManualUpload((v) => !v)}
+              className="flex w-full items-center justify-between px-5 py-3.5 text-left text-xs font-medium text-slate-600 hover:text-[#0F2238] dark:text-slate-300 dark:hover:text-white"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Upload className="h-4 w-4 text-slate-400" aria-hidden="true" />
+                Optional: Manual Local File Import (.xlsx, .csv, .json)
+              </span>
+              {showManualUpload ? (
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
+
+            {showManualUpload && (
+              <div className="space-y-4 border-t border-slate-200/80 p-5 dark:border-white/10">
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  {([
+                    { id: 'append', title: 'Append (Default)', desc: 'Adds new rows; skips duplicate Transaction IDs.' },
+                    { id: 'merge', title: 'Merge / Update', desc: 'Overwrites matching Transaction IDs & adds new.' },
+                    { id: 'replace', title: 'Replace All', desc: 'Replaces entire local warehouse (requires confirm).' },
+                  ] as const).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setUploadMode(m.id)}
+                      className={`rounded-xl border p-3 text-left transition-colors ${
+                        uploadMode === m.id
+                          ? 'border-[#26E6D0] bg-[#26E6D0]/10'
+                          : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-[#0F2238] dark:text-white">{m.title}</div>
+                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{m.desc}</p>
+                    </button>
+                  ))}
                 </div>
-                <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-                  <div
-                    className="h-full rounded-full brand-gradient transition-all duration-200"
-                    style={{ width: `${progress.pct}%` }}
+
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragging(false);
+                    handleFilesSelected(e.dataTransfer.files);
+                  }}
+                  className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
+                    dragging
+                      ? 'border-[#26E6D0] bg-[#26E6D0]/10'
+                      : 'border-slate-300 dark:border-white/15'
+                  }`}
+                >
+                  <Upload className="h-7 w-7 text-[#26E6D0]" aria-hidden="true" />
+                  <p className="mt-2 text-xs font-medium text-[#0F2238] dark:text-white">
+                    Drop Excel, CSV, TSV, JSON, or Delimited Text Files Here
+                  </p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".xlsx,.xls,.xlsm,.csv,.tsv,.json,.txt"
+                    onChange={(e) => {
+                      if (e.target.files) handleFilesSelected(e.target.files);
+                      e.target.value = '';
+                    }}
+                    className="hidden"
                   />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-4 rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-[#0F2238] hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
+                  >
+                    Choose Local Files
+                  </button>
+
+                  {progress && (
+                    <div className="mt-5 w-full max-w-md">
+                      <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
+                        <span>{progress.stage}</span>
+                        <span className="font-mono">{progress.pct}%</span>
+                      </div>
+                      <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                        <div
+                          className="h-full rounded-full brand-gradient transition-all duration-200"
+                          style={{ width: `${progress.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

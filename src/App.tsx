@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   BarChart3,
   BookOpen,
@@ -12,15 +13,16 @@ import {
   Filter,
   LayoutDashboard,
   Lightbulb,
+  Link2,
   MapPin,
   Menu,
   MessageSquare,
   Moon,
   Package,
+  RefreshCw,
   Search,
   Sun,
   TrendingUp,
-  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -35,6 +37,7 @@ import type {
   DimStore,
   FactSale,
   GlobalFilters,
+  LinkedGoogleSheet,
   NavTabId,
   PinnedInsight,
   RecommendationsBundle,
@@ -57,9 +60,22 @@ import {
   generateSampleRawSheets,
   runCleaningInWorker,
 } from './lib/etl/fileParser';
+import {
+  clearAccessToken,
+  getAccessToken,
+  googleSignIn,
+  googleSignOut,
+  initAuth,
+} from './lib/google/workspaceAuth';
+import {
+  fetchGoogleSpreadsheetWorkbook,
+  getSpreadsheetDriveMetadata,
+  GoogleAuthExpiredError,
+} from './lib/google/sheetsService';
 import { reconcileEntityColors } from './lib/theme/chartTheme';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GlobalFilterBar } from './components/GlobalFilterBar';
+import { GoogleSheetsConnector } from './components/GoogleSheetsConnector';
 import { ExecutiveOverview } from './features/ExecutiveOverview';
 import { TrendsView } from './features/TrendsView';
 import { ProductsView } from './features/ProductsView';
@@ -119,6 +135,17 @@ export default function App() {
   // Trained ML models in memory for current session
   const [models, setModels] = useState<AllModelResults>({});
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  // Google Drive / Google Sheets live connection state (OAuth token remains strictly in memory)
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [hasGoogleToken, setHasGoogleToken] = useState(false);
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [syncingSheet, setSyncingSheet] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ pct: number; stage: string } | null>(null);
+  const syncInFlightRef = useRef(false);
+  const lastPollAtRef = useRef(0);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const notify = useCallback((message: string, tone: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -186,6 +213,21 @@ export default function App() {
   useEffect(() => {
     hydrateFromDB().finally(() => setBooting(false));
   }, [hydrateFromDB]);
+
+  // Listen to Firebase Google Auth state
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user) => {
+        setGoogleUser(user);
+        setHasGoogleToken(true);
+      },
+      (user) => {
+        setGoogleUser(user);
+        setHasGoogleToken(false);
+      }
+    );
+    return unsubscribe;
+  }, []);
 
   // Sync Tailwind dark class with persisted theme setting
   useEffect(() => {
@@ -269,6 +311,257 @@ export default function App() {
     }
   };
 
+  const handleGoogleSignIn = useCallback(async (): Promise<string | null> => {
+    setIsSigningInGoogle(true);
+    try {
+      const { user, accessToken } = await googleSignIn();
+      setGoogleUser(user);
+      setHasGoogleToken(true);
+      notify(
+        `Connected Google Drive (${user.email || user.displayName || 'Google Account'}).`,
+        'success'
+      );
+      return accessToken;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
+      if (msg.includes('popup-closed-by-user') || msg.includes('cancelled-popup-request')) {
+        notify('Google sign-in window was closed before completing.', 'info');
+      } else {
+        notify(msg, 'error');
+      }
+      return null;
+    } finally {
+      setIsSigningInGoogle(false);
+    }
+  }, [notify]);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    await googleSignOut();
+    setGoogleUser(null);
+    setHasGoogleToken(false);
+    notify('Signed out of Google Drive.', 'info');
+  }, [notify]);
+
+  const handleGoogleTokenExpired = useCallback(() => {
+    clearAccessToken();
+    setHasGoogleToken(false);
+  }, []);
+
+  const syncSpreadsheetById = useCallback(
+    async (
+      spreadsheetId: string,
+      options?: { silentIfUnchanged?: boolean; interactiveAuth?: boolean }
+    ) => {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
+      const silentIfUnchanged = options?.silentIfUnchanged ?? false;
+
+      try {
+        let token = getAccessToken();
+        if (!token) {
+          if (options?.interactiveAuth) {
+            token = await handleGoogleSignIn();
+          }
+          if (!token) return;
+        }
+
+        const currentSettings = settingsRef.current;
+
+        // Lightweight modifiedTime probe during background live polling
+        if (
+          silentIfUnchanged &&
+          currentSettings.linkedGoogleSheet?.spreadsheetId === spreadsheetId &&
+          currentSettings.linkedGoogleSheet.lastModifiedTime
+        ) {
+          const driveMeta = await getSpreadsheetDriveMetadata(token, spreadsheetId);
+          if (
+            driveMeta.modifiedTime &&
+            driveMeta.modifiedTime === currentSettings.linkedGoogleSheet.lastModifiedTime
+          ) {
+            return;
+          }
+        }
+
+        setSyncingSheet(true);
+        setSyncProgress({ pct: 5, stage: 'Connecting to Google Sheets' });
+
+        const workbook = await fetchGoogleSpreadsheetWorkbook(
+          token,
+          spreadsheetId,
+          (pct, stage) => setSyncProgress({ pct, stage })
+        );
+
+        const detected = autoDetectTables(workbook.rawSheets);
+        if (detected.transactions.length === 0) {
+          throw new Error(
+            `No Transactions worksheet was detected in "${workbook.title}" (found tabs: ${workbook.sheetNames.join(
+              ', '
+            )}). Ensure your workbook includes the Transactions headers (Transaction ID, Date, Product, Quantity, Store, Sales Amount).`
+          );
+        }
+
+        const batchId = `gsheet-${Date.now()}`;
+        const sourceLabel = `${workbook.title} (Google Sheets)`;
+        const cleaned = await runCleaningInWorker(detected, {
+          batchId,
+          fileNames: [sourceLabel],
+          mapping: detected.detectedMapping,
+          dateFormatPreference: currentSettings.dateFormatPreference,
+          onProgress: (pct, stage) =>
+            setSyncProgress({ pct: Math.round(60 + pct * 0.32), stage }),
+        });
+
+        setSyncProgress({
+          pct: 95,
+          stage: 'Updating Metro Superstore star schema in IndexedDB',
+        });
+
+        await commitIngestionToDB({
+          mode: 'replace',
+          batchId,
+          fileNames: [sourceLabel],
+          newFacts: cleaned.facts,
+          dimProducts: cleaned.dimProducts,
+          dimStores: cleaned.dimStores,
+          qualityReport: cleaned.report,
+        });
+
+        const existingLink = currentSettings.linkedGoogleSheet;
+        const nextLinkedSheet: LinkedGoogleSheet = {
+          spreadsheetId: workbook.spreadsheetId,
+          name: workbook.title,
+          webViewLink: workbook.webViewLink,
+          sheetNames: workbook.sheetNames,
+          lastSyncedAt: new Date().toISOString(),
+          lastModifiedTime: workbook.modifiedTime,
+          autoSyncEnabled: existingLink?.autoSyncEnabled ?? true,
+          pollIntervalSeconds: existingLink?.pollIntervalSeconds ?? 30,
+          rowCounts: {
+            transactions: cleaned.facts.length,
+            stores: cleaned.dimStores.length,
+            products: cleaned.dimProducts.length,
+          },
+        };
+
+        await saveSettings({
+          linkedGoogleSheet: nextLinkedSheet,
+          onboardingCompleted: true,
+        });
+        await hydrateFromDB();
+
+        notify(
+          `Synced "${workbook.title}" (${workbook.sheetNames.length} worksheets · ${cleaned.facts.length.toLocaleString()} transactions).`,
+          'success'
+        );
+      } catch (err) {
+        if (err instanceof GoogleAuthExpiredError) {
+          handleGoogleTokenExpired();
+          if (!silentIfUnchanged) {
+            notify(err.message, 'info');
+          }
+        } else if (!silentIfUnchanged) {
+          notify(
+            err instanceof Error ? err.message : 'Failed to sync Google Spreadsheet.',
+            'error'
+          );
+        }
+      } finally {
+        syncInFlightRef.current = false;
+        setSyncingSheet(false);
+        setSyncProgress(null);
+      }
+    },
+    [handleGoogleSignIn, handleGoogleTokenExpired, hydrateFromDB, notify]
+  );
+
+  const handleLinkSpreadsheet = useCallback(
+    async (spreadsheetId: string) => {
+      await syncSpreadsheetById(spreadsheetId, {
+        silentIfUnchanged: false,
+        interactiveAuth: true,
+      });
+    },
+    [syncSpreadsheetById]
+  );
+
+  const handleRefreshLinkedSheet = useCallback(async () => {
+    const linked = settingsRef.current.linkedGoogleSheet;
+    if (!linked) {
+      setActiveTab('data');
+      notify('Connect a Google Spreadsheet in Data Manager to enable live refresh.', 'info');
+      return;
+    }
+    await syncSpreadsheetById(linked.spreadsheetId, {
+      silentIfUnchanged: false,
+      interactiveAuth: true,
+    });
+  }, [notify, syncSpreadsheetById]);
+
+  const handleUnlinkSpreadsheet = useCallback(async () => {
+    setSettings((prev) => ({ ...prev, linkedGoogleSheet: null }));
+    await saveSettings({ linkedGoogleSheet: null });
+    notify('Google Spreadsheet unlinked. Cached local data remains available.', 'info');
+  }, [notify]);
+
+  const handleUpdateLiveSyncSettings = useCallback(
+    (patch: { autoSyncEnabled?: boolean; pollIntervalSeconds?: number }) => {
+      setSettings((prev) => {
+        if (!prev.linkedGoogleSheet) return prev;
+        const nextLink: LinkedGoogleSheet = {
+          ...prev.linkedGoogleSheet,
+          ...patch,
+        };
+        void saveSettings({ linkedGoogleSheet: nextLink });
+        return { ...prev, linkedGoogleSheet: nextLink };
+      });
+    },
+    []
+  );
+
+  // Live Auto-Sync polling & tab-focus sync when a Google Spreadsheet is linked
+  const linkedSpreadsheetId = settings.linkedGoogleSheet?.spreadsheetId;
+  const linkedAutoSync = settings.linkedGoogleSheet?.autoSyncEnabled ?? false;
+  const linkedPollInterval = settings.linkedGoogleSheet?.pollIntervalSeconds ?? 30;
+
+  useEffect(() => {
+    if (!linkedSpreadsheetId || !linkedAutoSync || !hasGoogleToken) return;
+
+    const triggerCheck = () => {
+      const now = Date.now();
+      if (now - lastPollAtRef.current < 8000) return;
+      lastPollAtRef.current = now;
+      void syncSpreadsheetById(linkedSpreadsheetId, {
+        silentIfUnchanged: true,
+        interactiveAuth: false,
+      });
+    };
+
+    const intervalMs = Math.max(10, linkedPollInterval) * 1000;
+    const timer = window.setInterval(triggerCheck, intervalMs);
+
+    const handleFocus = () => triggerCheck();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        triggerCheck();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [
+    linkedSpreadsheetId,
+    linkedAutoSync,
+    linkedPollInterval,
+    hasGoogleToken,
+    syncSpreadsheetById,
+  ]);
+
   // Memoized filtered Fact_Sales (<200ms selector)
   const filteredFacts = useMemo(
     () => applyGlobalFilters(allFacts, settings.filters),
@@ -323,8 +616,8 @@ export default function App() {
 
   const TOUR_STEPS = [
     {
-      title: '1. Local-First Star Schema & ETL',
-      body: 'Upload Excel (.xlsx), CSV, or JSON in Data Manager. The app normalizes labels, reconciles Gross/Discount/Sales, flags outliers, and stores everything permanently in IndexedDB.',
+      title: '1. Live Google Drive & 3-Worksheet Star Schema',
+      body: 'Connect your 3-worksheet Google Spreadsheet (Transactions, Stores, Products) directly from Google Drive. Edits sync automatically or on demand via the Refresh button, with full cleaning and local IndexedDB caching.',
     },
     {
       title: '2. Cross-Filtered Executive Dashboards',
@@ -472,6 +765,17 @@ export default function App() {
                   <span className="font-medium text-[#0FB8A5] dark:text-[#26E6D0]">
                     {activeNavObj.label}
                   </span>
+                  {settings.linkedGoogleSheet && (
+                    <>
+                      <span className="hidden sm:inline" aria-hidden="true">·</span>
+                      <span className="hidden max-w-[200px] truncate text-slate-600 dark:text-slate-300 sm:inline">
+                        Live Sheet:{' '}
+                        <strong className="font-medium text-[#0F2238] dark:text-slate-100">
+                          {settings.linkedGoogleSheet.name}
+                        </strong>
+                      </span>
+                    </>
+                  )}
                   {allFacts.length > 0 && (
                     <>
                       <span className="hidden sm:inline" aria-hidden="true">·</span>
@@ -481,8 +785,8 @@ export default function App() {
                       </span>
                       {lastUpdatedStr && (
                         <>
-                          <span className="hidden md:inline" aria-hidden="true">·</span>
-                          <span className="hidden md:inline">Last updated {lastUpdatedStr}</span>
+                          <span className="hidden lg:inline" aria-hidden="true">·</span>
+                          <span className="hidden lg:inline">Last updated {lastUpdatedStr}</span>
                         </>
                       )}
                       <span className="hidden sm:inline" aria-hidden="true">·</span>
@@ -495,7 +799,34 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Live Google Sheets Refresh or Connect Button */}
+              {settings.linkedGoogleSheet ? (
+                <button
+                  type="button"
+                  disabled={syncingSheet}
+                  onClick={() => void handleRefreshLinkedSheet()}
+                  title={`Refresh live data from "${settings.linkedGoogleSheet.name}" (Last synced: ${settings.linkedGoogleSheet.lastSyncedAt.slice(0, 19).replace('T', ' ')})`}
+                  className="inline-flex items-center gap-1.5 rounded-lg brand-gradient px-3 py-1.5 text-xs font-semibold text-[#0F2238] transition-opacity hover:opacity-90 disabled:opacity-60"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${syncingSheet ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>{syncingSheet ? 'Syncing…' : 'Refresh'}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('data')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#26E6D0]/60 bg-[#26E6D0]/10 px-3 py-1.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 dark:text-[#26E6D0]"
+                >
+                  <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span className="hidden sm:inline">Connect Google Sheet</span>
+                  <span className="sm:hidden">Connect</span>
+                </button>
+              )}
+
               {/* Global Search */}
               <div className="relative hidden md:block">
                 <Search
@@ -510,7 +841,7 @@ export default function App() {
                   onChange={(e) =>
                     updateFilters({ ...settings.filters, searchQuery: e.target.value })
                   }
-                  className="w-56 rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#16314D] dark:text-white"
+                  className="w-48 rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#16314D] dark:text-white xl:w-56"
                 />
               </div>
 
@@ -543,6 +874,22 @@ export default function App() {
             </div>
           </div>
 
+          {/* Live Google Sheets Sync Progress Bar */}
+          {syncProgress && (
+            <div className="border-t border-slate-200/80 bg-slate-50/95 px-4 py-1.5 dark:border-white/10 dark:bg-[#0B1A2B]/95 sm:px-6">
+              <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                <span className="truncate">{syncProgress.stage}</span>
+                <span className="font-mono tabular-nums">{syncProgress.pct}%</span>
+              </div>
+              <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                <div
+                  className="h-full rounded-full brand-gradient transition-all duration-200"
+                  style={{ width: `${syncProgress.pct}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Global Slicers Strip (applies to every dashboard view) */}
           {allFacts.length > 0 && activeTab !== 'help' && (
             <GlobalFilterBar
@@ -569,57 +916,50 @@ export default function App() {
               </div>
             ) : showOnboardingEmpty ? (
               /* First-Run Onboarding Screen */
-              <section className="mx-auto max-w-4xl rounded-[16px] border border-slate-200/90 bg-white p-8 dark:border-white/10 dark:bg-[#16314D]">
-                <div className="max-w-2xl">
-                  <div className="text-xs font-semibold text-[#0FA696] dark:text-[#26E6D0]">
-                    Local-First Sales Analytics &amp; Machine Learning
+              <div className="mx-auto max-w-4xl space-y-5">
+                <section className="rounded-[16px] border border-slate-200/90 bg-white p-6 dark:border-white/10 dark:bg-[#16314D] sm:p-8">
+                  <div className="max-w-2xl">
+                    <div className="text-xs font-semibold text-[#0FA696] dark:text-[#26E6D0]">
+                      Live Google Sheets &amp; Sales Analytics Platform
+                    </div>
+                    <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-[#0F2238] dark:text-white sm:text-3xl">
+                      Welcome to Metro Superstore Sales Intelligence
+                    </h2>
+                    <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                      Link your 3-worksheet Google Spreadsheet (Transactions, Stores, Products) directly
+                      from Google Drive. Any update you make in Google Sheets reflects live across every
+                      KPI, chart, ML model, and report—with one-click Refresh and automatic change detection.
+                    </p>
                   </div>
-                  <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-[#0F2238] dark:text-white sm:text-3xl">
-                    Welcome to Metro Superstore Sales Intelligence
-                  </h2>
-                  <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-                    Upload your multi-sheet sales workbook (Transactions, Stores, Products) in Excel, CSV, or
-                    JSON. Every cleaning step, star-schema table, ML model, and report runs locally in your
-                    browser and persists automatically in IndexedDB.
-                  </p>
-                </div>
 
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('data')}
-                    className="inline-flex items-center gap-2 rounded-xl brand-gradient px-5 py-3 text-xs font-semibold text-[#0F2238] transition-opacity hover:opacity-90"
-                  >
-                    <Upload className="h-4 w-4" aria-hidden="true" />
-                    Upload Your Sales Data
-                  </button>
-                  <button
-                    type="button"
-                    disabled={loadingSample}
-                    onClick={handleQuickLoadSample}
-                    className="inline-flex items-center gap-2 rounded-xl border border-[#26E6D0]/50 bg-[#26E6D0]/10 px-5 py-3 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 disabled:opacity-50 dark:text-[#26E6D0]"
-                  >
-                    <Database className="h-4 w-4" aria-hidden="true" />
-                    {loadingSample ? 'Building Sample Warehouse…' : 'Load 24-Month Canadian Sample Dataset'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={downloadExcelTemplate}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-3 text-xs font-medium text-[#0F2238] hover:bg-slate-100 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
-                  >
-                    <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
-                    Download 3-Sheet Excel Template
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTourStep(0)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-3 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/10"
-                  >
-                    Quick Guided Tour
-                  </button>
-                </div>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      disabled={loadingSample}
+                      onClick={handleQuickLoadSample}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[#26E6D0]/50 bg-[#26E6D0]/10 px-4 py-2.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 disabled:opacity-50 dark:text-[#26E6D0]"
+                    >
+                      <Database className="h-4 w-4" aria-hidden="true" />
+                      {loadingSample ? 'Building Sample Warehouse…' : 'Load 24-Month Canadian Sample Dataset'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadExcelTemplate}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-medium text-[#0F2238] hover:bg-slate-100 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
+                    >
+                      <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+                      Download 3-Sheet Template
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTourStep(0)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/10"
+                    >
+                      Quick Guided Tour
+                    </button>
+                  </div>
 
-                {tourStep !== null && (
+                  {tourStep !== null && (
                   <div className="mt-6 rounded-xl border border-[#26E6D0]/40 bg-slate-50 p-5 dark:bg-[#0F2238]">
                     <div className="flex items-start justify-between gap-4">
                       <div>
@@ -673,8 +1013,28 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                )}
-              </section>
+                  )}
+                </section>
+
+                <GoogleSheetsConnector
+                  compact
+                  googleUser={googleUser}
+                  hasGoogleToken={hasGoogleToken}
+                  isSigningIn={isSigningInGoogle}
+                  syncing={syncingSheet}
+                  syncProgress={syncProgress}
+                  linkedSheet={settings.linkedGoogleSheet}
+                  onSignIn={handleGoogleSignIn}
+                  onSignOut={handleGoogleSignOut}
+                  onLinkSpreadsheet={handleLinkSpreadsheet}
+                  onRefreshLinkedSheet={handleRefreshLinkedSheet}
+                  onUnlinkSpreadsheet={handleUnlinkSpreadsheet}
+                  onUpdateLiveSyncSettings={handleUpdateLiveSyncSettings}
+                  onTokenExpired={handleGoogleTokenExpired}
+                  onNotify={notify}
+                  getToken={getAccessToken}
+                />
+              </div>
             ) : (
               <>
                 {activeTab === 'overview' && (
@@ -773,6 +1133,20 @@ export default function App() {
                     latestQualityReport={latestQualityReport}
                     filters={settings.filters}
                     dateFormatPreference={settings.dateFormatPreference}
+                    googleUser={googleUser}
+                    hasGoogleToken={hasGoogleToken}
+                    isSigningInGoogle={isSigningInGoogle}
+                    syncingSheet={syncingSheet}
+                    syncProgress={syncProgress}
+                    linkedGoogleSheet={settings.linkedGoogleSheet}
+                    onGoogleSignIn={handleGoogleSignIn}
+                    onGoogleSignOut={handleGoogleSignOut}
+                    onLinkSpreadsheet={handleLinkSpreadsheet}
+                    onRefreshLinkedSheet={handleRefreshLinkedSheet}
+                    onUnlinkSpreadsheet={handleUnlinkSpreadsheet}
+                    onUpdateLiveSyncSettings={handleUpdateLiveSyncSettings}
+                    onGoogleTokenExpired={handleGoogleTokenExpired}
+                    getGoogleToken={getAccessToken}
                     onUpdatePreferences={(patch) => {
                       const nextFilters: GlobalFilters = {
                         ...settings.filters,

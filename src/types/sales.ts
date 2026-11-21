@@ -144,6 +144,22 @@ export interface EntityColorRegistry {
   salespeople: Record<string, number>;
 }
 
+export interface LinkedGoogleSheet {
+  spreadsheetId: string;
+  name: string;
+  webViewLink?: string;
+  sheetNames: string[];
+  lastSyncedAt: string;
+  lastModifiedTime?: string;
+  autoSyncEnabled: boolean;
+  pollIntervalSeconds: number;
+  rowCounts?: {
+    transactions: number;
+    stores: number;
+    products: number;
+  };
+}
+
 export interface AppSettings {
   id: 'singleton';
   theme: 'dark' | 'light';
@@ -154,6 +170,7 @@ export interface AppSettings {
   onboardingCompleted: boolean;
   filters: GlobalFilters;
   entityColors: EntityColorRegistry;
+  linkedGoogleSheet: LinkedGoogleSheet | null;
 }
 
 export interface KpiMetric {
