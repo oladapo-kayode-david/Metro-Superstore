@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react';
-import type { User } from 'firebase/auth';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -46,7 +45,11 @@ import {
   downloadDataQualityReport,
   downloadRejectedRowsCsv,
 } from '../lib/reports/exporters';
-import { GoogleSheetsConnector } from '../components/GoogleSheetsConnector';
+import type { GoogleAccountProfile } from '../lib/google/workspaceAuth';
+import {
+  GoogleSheetsConnector,
+  type DomainAuthDiagnostic,
+} from '../components/GoogleSheetsConnector';
 
 interface DataManagerViewProps {
   allFacts: FactSale[];
@@ -58,15 +61,16 @@ interface DataManagerViewProps {
   latestQualityReport: DataQualityReport | null;
   filters: GlobalFilters;
   dateFormatPreference: 'auto' | 'DMY' | 'MDY';
-  googleUser: User | null;
+  googleUser: GoogleAccountProfile | null;
   hasGoogleToken: boolean;
   isSigningInGoogle: boolean;
   syncingSheet: boolean;
   syncProgress: { pct: number; stage: string } | null;
   linkedGoogleSheet: LinkedGoogleSheet | null;
+  domainAuthError: DomainAuthDiagnostic | null;
   onGoogleSignIn: () => Promise<string | null>;
   onGoogleSignOut: () => Promise<void>;
-  onLinkSpreadsheet: (spreadsheetId: string) => Promise<void>;
+  onLinkSpreadsheet: (spreadsheetId: string) => Promise<boolean>;
   onRefreshLinkedSheet: () => Promise<void>;
   onUnlinkSpreadsheet: () => Promise<void>;
   onUpdateLiveSyncSettings: (patch: {
@@ -119,6 +123,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
   syncingSheet,
   syncProgress,
   linkedGoogleSheet,
+  domainAuthError,
   onGoogleSignIn,
   onGoogleSignOut,
   onLinkSpreadsheet,
@@ -415,6 +420,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
             syncing={syncingSheet}
             syncProgress={syncProgress}
             linkedSheet={linkedGoogleSheet}
+            domainAuthError={domainAuthError}
             onSignIn={onGoogleSignIn}
             onSignOut={onGoogleSignOut}
             onLinkSpreadsheet={onLinkSpreadsheet}

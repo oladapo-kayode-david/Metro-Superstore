@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { User } from 'firebase/auth';
 import {
   BarChart3,
   BookOpen,
@@ -13,7 +12,6 @@ import {
   Filter,
   LayoutDashboard,
   Lightbulb,
-  Link2,
   MapPin,
   Menu,
   MessageSquare,
@@ -63,19 +61,27 @@ import {
 import {
   clearAccessToken,
   getAccessToken,
+  GoogleDomainAuthError,
   googleSignIn,
   googleSignOut,
   initAuth,
+  type GoogleAccountProfile,
 } from './lib/google/workspaceAuth';
 import {
   fetchGoogleSpreadsheetWorkbook,
+  fetchPublicGoogleSpreadsheetWorkbook,
   getSpreadsheetDriveMetadata,
   GoogleAuthExpiredError,
+  PublicSheetPrivateError,
+  type FetchedWorkbook,
 } from './lib/google/sheetsService';
 import { reconcileEntityColors } from './lib/theme/chartTheme';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GlobalFilterBar } from './components/GlobalFilterBar';
-import { GoogleSheetsConnector } from './components/GoogleSheetsConnector';
+import {
+  GoogleSheetsConnector,
+  type DomainAuthDiagnostic,
+} from './components/GoogleSheetsConnector';
 import { ExecutiveOverview } from './features/ExecutiveOverview';
 import { TrendsView } from './features/TrendsView';
 import { ProductsView } from './features/ProductsView';
@@ -137,9 +143,11 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   // Google Drive / Google Sheets live connection state (OAuth token remains strictly in memory)
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleAccountProfile | null>(null);
   const [hasGoogleToken, setHasGoogleToken] = useState(false);
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [domainAuthError, setDomainAuthError] = useState<DomainAuthDiagnostic | null>(null);
+  const [liveSheetModalOpen, setLiveSheetModalOpen] = useState(false);
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ pct: number; stage: string } | null>(null);
   const syncInFlightRef = useRef(false);
@@ -313,6 +321,7 @@ export default function App() {
 
   const handleGoogleSignIn = useCallback(async (): Promise<string | null> => {
     setIsSigningInGoogle(true);
+    setDomainAuthError(null);
     try {
       const { user, accessToken } = await googleSignIn();
       setGoogleUser(user);
@@ -323,6 +332,18 @@ export default function App() {
       );
       return accessToken;
     } catch (err) {
+      if (err instanceof GoogleDomainAuthError) {
+        setDomainAuthError({
+          hostname: err.hostname,
+          projectId: err.projectId,
+          authorizedDomains: err.authorizedDomains,
+        });
+        notify(
+          'Google Sign-In is restricted on this host. Use Option 1 to paste your shared Google Sheet link directly.',
+          'info'
+        );
+        return null;
+      }
       const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
       if (msg.includes('popup-closed-by-user') || msg.includes('cancelled-popup-request')) {
         notify('Google sign-in window was closed before completing.', 'info');
@@ -351,45 +372,108 @@ export default function App() {
     async (
       spreadsheetId: string,
       options?: { silentIfUnchanged?: boolean; interactiveAuth?: boolean }
-    ) => {
-      if (syncInFlightRef.current) return;
+    ): Promise<boolean> => {
+      if (syncInFlightRef.current) return false;
       syncInFlightRef.current = true;
       const silentIfUnchanged = options?.silentIfUnchanged ?? false;
 
       try {
-        let token = getAccessToken();
-        if (!token) {
-          if (options?.interactiveAuth) {
-            token = await handleGoogleSignIn();
-          }
-          if (!token) return;
-        }
-
         const currentSettings = settingsRef.current;
+        const existingLink = currentSettings.linkedGoogleSheet;
+        let token = getAccessToken();
 
-        // Lightweight modifiedTime probe during background live polling
+        // If refreshing a previously OAuth-linked private sheet interactively, sign in first
         if (
-          silentIfUnchanged &&
-          currentSettings.linkedGoogleSheet?.spreadsheetId === spreadsheetId &&
-          currentSettings.linkedGoogleSheet.lastModifiedTime
+          !token &&
+          options?.interactiveAuth &&
+          existingLink?.spreadsheetId === spreadsheetId &&
+          existingLink.authMode === 'oauth'
         ) {
-          const driveMeta = await getSpreadsheetDriveMetadata(token, spreadsheetId);
+          token = await handleGoogleSignIn();
+        }
+
+        let workbook: FetchedWorkbook | null = null;
+        let resolvedAuthMode: 'oauth' | 'public_link' = token ? 'oauth' : 'public_link';
+
+        if (token) {
+          // Lightweight modifiedTime probe during background live polling
           if (
-            driveMeta.modifiedTime &&
-            driveMeta.modifiedTime === currentSettings.linkedGoogleSheet.lastModifiedTime
+            silentIfUnchanged &&
+            existingLink?.spreadsheetId === spreadsheetId &&
+            existingLink.lastModifiedTime
           ) {
-            return;
+            const driveMeta = await getSpreadsheetDriveMetadata(token, spreadsheetId);
+            if (
+              driveMeta.modifiedTime &&
+              driveMeta.modifiedTime === existingLink.lastModifiedTime
+            ) {
+              return true;
+            }
+          }
+
+          setSyncingSheet(true);
+          setSyncProgress({ pct: 5, stage: 'Connecting to Google Sheets' });
+
+          workbook = await fetchGoogleSpreadsheetWorkbook(
+            token,
+            spreadsheetId,
+            (pct, stage) => setSyncProgress({ pct, stage })
+          );
+          resolvedAuthMode = 'oauth';
+        } else {
+          // Link-shared Google Sheet live sync (works directly from pasted URL without sign-in)
+          if (!silentIfUnchanged) {
+            setSyncingSheet(true);
+            setSyncProgress({ pct: 5, stage: 'Connecting to Live Google Sheet' });
+          }
+
+          try {
+            const publicRes = await fetchPublicGoogleSpreadsheetWorkbook(spreadsheetId, {
+              ifHash:
+                silentIfUnchanged && existingLink?.spreadsheetId === spreadsheetId
+                  ? existingLink.lastContentHash
+                  : undefined,
+              onProgress: silentIfUnchanged
+                ? undefined
+                : (pct, stage) => setSyncProgress({ pct, stage }),
+            });
+
+            if (publicRes.unchanged) {
+              return true;
+            }
+
+            if (silentIfUnchanged) {
+              setSyncingSheet(true);
+              setSyncProgress({ pct: 60, stage: 'Applying live spreadsheet updates' });
+            }
+
+            workbook = publicRes.workbook;
+            resolvedAuthMode = 'public_link';
+          } catch (pubErr) {
+            if (pubErr instanceof PublicSheetPrivateError && options?.interactiveAuth) {
+              // Sheet is private -> seamlessly prompt Google Sign-In and retry via Sheets API
+              setSyncProgress(null);
+              setSyncingSheet(false);
+              const freshToken = await handleGoogleSignIn();
+              if (!freshToken) {
+                notify(pubErr.message, 'info');
+                return false;
+              }
+              setSyncingSheet(true);
+              setSyncProgress({ pct: 10, stage: 'Downloading private Google Spreadsheet' });
+              workbook = await fetchGoogleSpreadsheetWorkbook(
+                freshToken,
+                spreadsheetId,
+                (pct, stage) => setSyncProgress({ pct, stage })
+              );
+              resolvedAuthMode = 'oauth';
+            } else {
+              throw pubErr;
+            }
           }
         }
 
-        setSyncingSheet(true);
-        setSyncProgress({ pct: 5, stage: 'Connecting to Google Sheets' });
-
-        const workbook = await fetchGoogleSpreadsheetWorkbook(
-          token,
-          spreadsheetId,
-          (pct, stage) => setSyncProgress({ pct, stage })
-        );
+        if (!workbook) return false;
 
         const detected = autoDetectTables(workbook.rawSheets);
         if (detected.transactions.length === 0) {
@@ -426,7 +510,6 @@ export default function App() {
           qualityReport: cleaned.report,
         });
 
-        const existingLink = currentSettings.linkedGoogleSheet;
         const nextLinkedSheet: LinkedGoogleSheet = {
           spreadsheetId: workbook.spreadsheetId,
           name: workbook.title,
@@ -434,6 +517,8 @@ export default function App() {
           sheetNames: workbook.sheetNames,
           lastSyncedAt: new Date().toISOString(),
           lastModifiedTime: workbook.modifiedTime,
+          lastContentHash: workbook.contentHash,
+          authMode: resolvedAuthMode,
           autoSyncEnabled: existingLink?.autoSyncEnabled ?? true,
           pollIntervalSeconds: existingLink?.pollIntervalSeconds ?? 30,
           rowCounts: {
@@ -453,6 +538,7 @@ export default function App() {
           `Synced "${workbook.title}" (${workbook.sheetNames.length} worksheets · ${cleaned.facts.length.toLocaleString()} transactions).`,
           'success'
         );
+        return true;
       } catch (err) {
         if (err instanceof GoogleAuthExpiredError) {
           handleGoogleTokenExpired();
@@ -465,6 +551,7 @@ export default function App() {
             'error'
           );
         }
+        return false;
       } finally {
         syncInFlightRef.current = false;
         setSyncingSheet(false);
@@ -475,8 +562,8 @@ export default function App() {
   );
 
   const handleLinkSpreadsheet = useCallback(
-    async (spreadsheetId: string) => {
-      await syncSpreadsheetById(spreadsheetId, {
+    async (spreadsheetId: string): Promise<boolean> => {
+      return syncSpreadsheetById(spreadsheetId, {
         silentIfUnchanged: false,
         interactiveAuth: true,
       });
@@ -487,15 +574,14 @@ export default function App() {
   const handleRefreshLinkedSheet = useCallback(async () => {
     const linked = settingsRef.current.linkedGoogleSheet;
     if (!linked) {
-      setActiveTab('data');
-      notify('Connect a Google Spreadsheet in Data Manager to enable live refresh.', 'info');
+      setLiveSheetModalOpen(true);
       return;
     }
     await syncSpreadsheetById(linked.spreadsheetId, {
       silentIfUnchanged: false,
       interactiveAuth: true,
     });
-  }, [notify, syncSpreadsheetById]);
+  }, [syncSpreadsheetById]);
 
   const handleUnlinkSpreadsheet = useCallback(async () => {
     setSettings((prev) => ({ ...prev, linkedGoogleSheet: null }));
@@ -522,9 +608,11 @@ export default function App() {
   const linkedSpreadsheetId = settings.linkedGoogleSheet?.spreadsheetId;
   const linkedAutoSync = settings.linkedGoogleSheet?.autoSyncEnabled ?? false;
   const linkedPollInterval = settings.linkedGoogleSheet?.pollIntervalSeconds ?? 30;
+  const linkedAuthMode = settings.linkedGoogleSheet?.authMode ?? 'oauth';
 
   useEffect(() => {
-    if (!linkedSpreadsheetId || !linkedAutoSync || !hasGoogleToken) return;
+    if (!linkedSpreadsheetId || !linkedAutoSync) return;
+    if (linkedAuthMode === 'oauth' && !hasGoogleToken) return;
 
     const triggerCheck = () => {
       const now = Date.now();
@@ -558,6 +646,7 @@ export default function App() {
     linkedSpreadsheetId,
     linkedAutoSync,
     linkedPollInterval,
+    linkedAuthMode,
     hasGoogleToken,
     syncSpreadsheetById,
   ]);
@@ -800,8 +889,23 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              {/* Live Google Sheets Refresh or Connect Button */}
-              {settings.linkedGoogleSheet ? (
+              {/* Primary Live Google Sheet Button (opens Google Drive picker & URL linker modal) */}
+              <button
+                type="button"
+                onClick={() => setLiveSheetModalOpen(true)}
+                title="Pick a 3-worksheet spreadsheet from Google Drive or paste its Google Sheets link"
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  settings.linkedGoogleSheet
+                    ? 'border border-[#26E6D0]/60 bg-[#26E6D0]/10 text-[#0F2238] hover:bg-[#26E6D0]/20 dark:text-[#26E6D0]'
+                    : 'brand-gradient text-[#0F2238] hover:opacity-90'
+                }`}
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Live Google Sheet</span>
+              </button>
+
+              {/* On-demand Refresh Button when a Google Spreadsheet is linked */}
+              {settings.linkedGoogleSheet && (
                 <button
                   type="button"
                   disabled={syncingSheet}
@@ -813,17 +917,7 @@ export default function App() {
                     className={`h-3.5 w-3.5 ${syncingSheet ? 'animate-spin' : ''}`}
                     aria-hidden="true"
                   />
-                  <span>{syncingSheet ? 'Syncing…' : 'Refresh'}</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('data')}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#26E6D0]/60 bg-[#26E6D0]/10 px-3 py-1.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 dark:text-[#26E6D0]"
-                >
-                  <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span className="hidden sm:inline">Connect Google Sheet</span>
-                  <span className="sm:hidden">Connect</span>
+                  <span className="hidden sm:inline">{syncingSheet ? 'Syncing…' : 'Refresh'}</span>
                 </button>
               )}
 
@@ -1024,6 +1118,7 @@ export default function App() {
                   syncing={syncingSheet}
                   syncProgress={syncProgress}
                   linkedSheet={settings.linkedGoogleSheet}
+                  domainAuthError={domainAuthError}
                   onSignIn={handleGoogleSignIn}
                   onSignOut={handleGoogleSignOut}
                   onLinkSpreadsheet={handleLinkSpreadsheet}
@@ -1139,6 +1234,7 @@ export default function App() {
                     syncingSheet={syncingSheet}
                     syncProgress={syncProgress}
                     linkedGoogleSheet={settings.linkedGoogleSheet}
+                    domainAuthError={domainAuthError}
                     onGoogleSignIn={handleGoogleSignIn}
                     onGoogleSignOut={handleGoogleSignOut}
                     onLinkSpreadsheet={handleLinkSpreadsheet}
@@ -1189,6 +1285,69 @@ export default function App() {
           </ErrorBoundary>
         </main>
       </div>
+
+      {/* Live Google Sheet Modal (Pick from Google Drive or Paste Link from any tab) */}
+      {liveSheetModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Live Google Sheet Connection"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-[#0F2238]/75 p-4 backdrop-blur-sm"
+          onClick={() => setLiveSheetModalOpen(false)}
+        >
+          <div
+            className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-[18px] border border-slate-200/90 bg-white shadow-2xl dark:border-white/15 dark:bg-[#16314D]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200/80 px-5 py-4 dark:border-white/10">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl brand-gradient text-[#0F2238]">
+                  <FileSpreadsheet className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="truncate font-display text-base font-bold text-[#0F2238] dark:text-white">
+                    Live Google Sheet
+                  </h2>
+                  <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                    Connect a 3-worksheet Google Spreadsheet (Transactions, Stores, Products)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLiveSheetModalOpen(false)}
+                aria-label="Close Live Google Sheet modal"
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-[#0F2238] dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-5">
+              <GoogleSheetsConnector
+                inModal
+                googleUser={googleUser}
+                hasGoogleToken={hasGoogleToken}
+                isSigningIn={isSigningInGoogle}
+                syncing={syncingSheet}
+                syncProgress={syncProgress}
+                linkedSheet={settings.linkedGoogleSheet}
+                domainAuthError={domainAuthError}
+                onSignIn={handleGoogleSignIn}
+                onSignOut={handleGoogleSignOut}
+                onLinkSpreadsheet={handleLinkSpreadsheet}
+                onRefreshLinkedSheet={handleRefreshLinkedSheet}
+                onUnlinkSpreadsheet={handleUnlinkSpreadsheet}
+                onUpdateLiveSyncSettings={handleUpdateLiveSyncSettings}
+                onTokenExpired={handleGoogleTokenExpired}
+                onNotify={notify}
+                getToken={getAccessToken}
+                onConnected={() => setLiveSheetModalOpen(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating AI Analyst Button & Slide-Over Drawer (hidden when already on AI Analyst tab) */}
       {allFacts.length > 0 && activeTab !== 'analyst' && (

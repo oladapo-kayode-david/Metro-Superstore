@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import type { User } from 'firebase/auth';
 import {
+  AlertTriangle,
   CheckCircle2,
+  Copy,
   ExternalLink,
   FileSpreadsheet,
   FolderOpen,
@@ -12,6 +13,7 @@ import {
   Unlink,
 } from 'lucide-react';
 import type { LinkedGoogleSheet } from '../types/sales';
+import type { GoogleAccountProfile } from '../lib/google/workspaceAuth';
 import {
   extractSpreadsheetId,
   GoogleAuthExpiredError,
@@ -19,16 +21,23 @@ import {
   type DriveSpreadsheetFile,
 } from '../lib/google/sheetsService';
 
+export interface DomainAuthDiagnostic {
+  hostname: string;
+  projectId: string;
+  authorizedDomains: string[];
+}
+
 interface GoogleSheetsConnectorProps {
-  googleUser: User | null;
+  googleUser: GoogleAccountProfile | null;
   hasGoogleToken: boolean;
   isSigningIn: boolean;
   syncing: boolean;
   syncProgress: { pct: number; stage: string } | null;
   linkedSheet: LinkedGoogleSheet | null;
+  domainAuthError?: DomainAuthDiagnostic | null;
   onSignIn: () => Promise<string | null>;
   onSignOut: () => Promise<void>;
-  onLinkSpreadsheet: (spreadsheetId: string) => Promise<void>;
+  onLinkSpreadsheet: (spreadsheetId: string) => Promise<boolean>;
   onRefreshLinkedSheet: () => Promise<void>;
   onUnlinkSpreadsheet: () => Promise<void>;
   onUpdateLiveSyncSettings: (patch: {
@@ -39,6 +48,8 @@ interface GoogleSheetsConnectorProps {
   onNotify: (msg: string, tone?: 'success' | 'error' | 'info') => void;
   getToken: () => string | null;
   compact?: boolean;
+  inModal?: boolean;
+  onConnected?: () => void;
 }
 
 export const GoogleSignInButton: React.FC<{
@@ -89,6 +100,7 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
   syncing,
   syncProgress,
   linkedSheet,
+  domainAuthError,
   onSignIn,
   onSignOut,
   onLinkSpreadsheet,
@@ -99,13 +111,16 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
   onNotify,
   getToken,
   compact = false,
+  inModal = false,
+  onConnected,
 }) => {
-  const [showBrowser, setShowBrowser] = useState(!linkedSheet);
+  const [showBrowser, setShowBrowser] = useState(!linkedSheet || inModal);
   const [driveFiles, setDriveFiles] = useState<DriveSpreadsheetFile[]>([]);
   const [loadingDrive, setLoadingDrive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [directInput, setDirectInput] = useState('');
   const [driveError, setDriveError] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   const loadDriveFiles = useCallback(
     async (query = '') => {
@@ -134,7 +149,7 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
 
   useEffect(() => {
     if (hasGoogleToken && (showBrowser || !linkedSheet)) {
-      loadDriveFiles('');
+      void loadDriveFiles('');
     }
   }, [hasGoogleToken, showBrowser, linkedSheet, loadDriveFiles]);
 
@@ -145,68 +160,66 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
       onNotify('Enter a valid Google Sheets URL or Spreadsheet ID.', 'error');
       return;
     }
-    await onLinkSpreadsheet(id);
-    setDirectInput('');
-    setShowBrowser(false);
+    const ok = await onLinkSpreadsheet(id);
+    if (ok) {
+      setDirectInput('');
+      setShowBrowser(false);
+      onConnected?.();
+    }
   };
 
   const handlePickFile = async (fileId: string) => {
-    await onLinkSpreadsheet(fileId);
-    setShowBrowser(false);
+    const ok = await onLinkSpreadsheet(fileId);
+    if (ok) {
+      setShowBrowser(false);
+      onConnected?.();
+    }
   };
 
-  return (
-    <section className="rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D]">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200/80 pb-4 dark:border-white/10">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl brand-gradient text-[#0F2238]">
-            <FileSpreadsheet className="h-5 w-5" aria-hidden="true" />
-          </div>
-          <div>
-            <h3 className="font-display text-base font-semibold text-[#0F2238] dark:text-white">
-              Google Drive Live Spreadsheet Connection
-            </h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-              Connect a 3-worksheet Google Spreadsheet (Transactions, Stores, Products) directly from Google Drive. Updates in your spreadsheet reflect live on the dashboard.
-            </p>
-          </div>
-        </div>
+  const handleCopyHostname = async (hostname: string) => {
+    try {
+      await navigator.clipboard.writeText(hostname);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      onNotify(`Copy this domain: ${hostname}`, 'info');
+    }
+  };
 
-        <div className="flex flex-wrap items-center gap-2">
-          {hasGoogleToken && googleUser ? (
-            <>
-              <div className="text-right text-xs">
-                <div className="font-medium text-[#0F2238] dark:text-white">
-                  {googleUser.displayName || 'Google Account'}
-                </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {googleUser.email}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={onSignOut}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/10"
-              >
-                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-                Sign out
-              </button>
-            </>
-          ) : (
-            <GoogleSignInButton
-              onClick={() => void onSignIn()}
-              disabled={isSigningIn}
-              label={
-                isSigningIn
-                  ? 'Connecting to Google…'
-                  : linkedSheet
-                  ? 'Reconnect Google Account'
-                  : 'Sign in with Google'
-              }
-            />
-          )}
+  const wrapperClass = inModal
+    ? 'space-y-5'
+    : 'rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D]';
+
+  return (
+    <section className={wrapperClass}>
+      {!inModal && (
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200/80 pb-4 dark:border-white/10">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl brand-gradient text-[#0F2238]">
+              <FileSpreadsheet className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="font-display text-base font-semibold text-[#0F2238] dark:text-white">
+                Live Google Sheet Connection
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Pick a 3-worksheet spreadsheet (Transactions, Stores, Products) from Google Drive or paste its Google Sheets link. Updates reflect live on the dashboard.
+              </p>
+            </div>
+          </div>
+
+          <a
+            href="https://drive.google.com/drive/search?q=type:spreadsheet"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+          >
+            <FolderOpen className="h-3.5 w-3.5 text-[#0FB8A5] dark:text-[#26E6D0]" aria-hidden="true" />
+            Open Google Drive
+            <ExternalLink className="h-3 w-3 opacity-70" aria-hidden="true" />
+          </a>
         </div>
-      </div>
+      )}
 
       {/* Linked Workbook Active Status Card */}
       {linkedSheet && (
@@ -214,7 +227,10 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-[#0FB8A5] dark:text-[#26E6D0]" aria-hidden="true" />
+                <CheckCircle2
+                  className="h-4 w-4 shrink-0 text-[#0FB8A5] dark:text-[#26E6D0]"
+                  aria-hidden="true"
+                />
                 <span className="truncate font-display text-sm font-semibold text-[#0F2238] dark:text-white">
                   {linkedSheet.name}
                 </span>
@@ -225,7 +241,7 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-xs font-medium text-[#0FB8A5] hover:underline dark:text-[#26E6D0]"
                   >
-                    Open Sheet
+                    Open in Google Sheets
                     <ExternalLink className="h-3 w-3" aria-hidden="true" />
                   </a>
                 )}
@@ -264,14 +280,16 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
                 />
                 {syncing ? 'Refreshing…' : 'Refresh Now'}
               </button>
-              <button
-                type="button"
-                onClick={() => setShowBrowser((v) => !v)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
-              >
-                <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
-                {showBrowser ? 'Hide Drive Browser' : 'Switch Sheet'}
-              </button>
+              {!inModal && (
+                <button
+                  type="button"
+                  onClick={() => setShowBrowser((v) => !v)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
+                  {showBrowser ? 'Hide Switcher' : 'Switch Sheet'}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={syncing}
@@ -296,7 +314,7 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
                 className="rounded accent-[#26E6D0]"
               />
               <span>
-                Live Auto-Sync (automatically checks Google Drive for spreadsheet edits &amp; syncs on tab focus)
+                Live Auto-Sync (automatically pulls spreadsheet updates &amp; refreshes on tab focus)
               </span>
             </label>
 
@@ -319,10 +337,10 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
             </div>
           </div>
 
-          {!hasGoogleToken && (
+          {!hasGoogleToken && linkedSheet.authMode !== 'public_link' && (
             <div className="mt-3 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-              Cached dashboard data is loaded locally. Click <strong>Refresh Now</strong> or{' '}
-              <strong>Reconnect Google Account</strong> to pull new live edits from Google Sheets.
+              Cached dashboard data is loaded locally. Click <strong>Refresh Now</strong> or sign in
+              with Google below to pull new live edits from your private Google Sheet.
             </div>
           )}
         </div>
@@ -344,42 +362,31 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
         </div>
       )}
 
-      {/* Drive Spreadsheet Browser */}
-      {hasGoogleToken && (showBrowser || !linkedSheet) && (
-        <div className="mt-5 space-y-4">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-            {/* Search Drive */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void loadDriveFiles(searchQuery);
-              }}
-              className="flex items-center gap-2 lg:col-span-6"
-            >
-              <div className="relative flex-1">
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
-                  aria-hidden="true"
-                />
-                <input
-                  type="search"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search Google Spreadsheets in your Drive…"
-                  className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 pl-9 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#0F2238] dark:text-white"
-                />
+      {/* Connection Panels: Always allow pasting a link AND picking from Google Drive */}
+      {(showBrowser || !linkedSheet || inModal) && (
+        <div className="mt-4 space-y-4">
+          {/* Option 1: Direct Google Spreadsheet Link / ID (Works immediately for shared links & private sheets when signed in) */}
+          <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-white/10 dark:bg-[#0F2238]/60">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-[#0F2238] dark:text-white">
+                Option 1 · Add Google Spreadsheet Link
               </div>
-              <button
-                type="submit"
-                disabled={loadingDrive}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+              <a
+                href="https://drive.google.com/drive/search?q=type:spreadsheet"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#0FB8A5] hover:underline dark:text-[#26E6D0]"
               >
-                {loadingDrive ? 'Searching…' : 'Search Drive'}
-              </button>
-            </form>
-
-            {/* Paste direct Google Sheets URL or ID */}
-            <form onSubmit={handleLinkByUrlOrId} className="flex items-center gap-2 lg:col-span-6">
+                Find spreadsheet in Google Drive
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+              Paste your 3-worksheet Google Sheets URL or Spreadsheet ID. Works with private Drive
+              sheets when signed in, or immediately with any sheet shared as &ldquo;Anyone with the
+              link (Viewer)&rdquo;.
+            </p>
+            <form onSubmit={handleLinkByUrlOrId} className="mt-3 flex flex-col gap-2 sm:flex-row">
               <div className="relative flex-1">
                 <Link2
                   className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
@@ -389,100 +396,223 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
                   type="text"
                   value={directInput}
                   onChange={(e) => setDirectInput(e.target.value)}
-                  placeholder="Or paste Google Sheets URL / Spreadsheet ID…"
-                  className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 pl-9 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#0F2238] dark:text-white"
+                  placeholder="https://docs.google.com/spreadsheets/d/…/edit"
+                  className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#16314D] dark:text-white"
                 />
               </div>
               <button
                 type="submit"
                 disabled={syncing || !directInput.trim()}
-                className="whitespace-nowrap rounded-lg brand-gradient px-3.5 py-2 text-xs font-semibold text-[#0F2238] disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg brand-gradient px-4 py-2 text-xs font-semibold text-[#0F2238] transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                Link URL
+                <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {syncing ? 'Connecting…' : 'Connect Live'}
               </button>
             </form>
           </div>
 
-          {driveError && (
-            <div className="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">
-              {driveError}
-            </div>
-          )}
+          {/* Option 2: Browse & Pick Directly from Google Drive */}
+          <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-white/10 dark:bg-[#0F2238]/60">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-[#0F2238] dark:text-white">
+                  Option 2 · Pick Directly from Your Google Drive
+                </div>
+                <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  Sign in with Google to browse your private &amp; shared Drive spreadsheets and
+                  connect with one click.
+                </p>
+              </div>
 
-          {/* Spreadsheet List */}
-          <div
-            className={`overflow-auto rounded-xl border border-slate-200/80 dark:border-white/10 ${
-              compact ? 'max-h-56' : 'max-h-72'
-            }`}
-          >
-            {loadingDrive ? (
-              <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                Loading Google Spreadsheets from your Drive…
+              <div className="flex flex-wrap items-center gap-2">
+                {hasGoogleToken && googleUser ? (
+                  <>
+                    <div className="text-right text-xs">
+                      <div className="font-medium text-[#0F2238] dark:text-white">
+                        {googleUser.displayName || 'Google Account'}
+                      </div>
+                      {googleUser.email && (
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {googleUser.email}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void onSignOut()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-white/15 dark:text-slate-300 dark:hover:bg-white/10"
+                    >
+                      <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <GoogleSignInButton
+                    onClick={() => void onSignIn()}
+                    disabled={isSigningIn}
+                    label={
+                      isSigningIn
+                        ? 'Connecting to Google…'
+                        : linkedSheet
+                        ? 'Reconnect Google Drive'
+                        : 'Sign in with Google'
+                    }
+                  />
+                )}
               </div>
-            ) : driveFiles.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                No Google Spreadsheets found matching your query. Make sure your workbook is saved as a Google Spreadsheet in Google Drive, or paste its URL above.
-              </div>
-            ) : (
-              <table className="w-full border-collapse text-left text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-slate-600 dark:bg-[#0F2238] dark:text-slate-300">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Spreadsheet Name</th>
-                    <th className="hidden px-3 py-2 font-medium sm:table-cell">Owner</th>
-                    <th className="px-3 py-2 font-medium">Last Modified</th>
-                    <th className="px-3 py-2 text-right font-medium">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-white/5">
-                  {driveFiles.map((file) => {
-                    const isLinked = linkedSheet?.spreadsheetId === file.id;
-                    return (
-                      <tr
-                        key={file.id}
-                        className="hover:bg-slate-50 dark:hover:bg-white/5"
+            </div>
+
+            {domainAuthError && !hasGoogleToken && (
+              <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="font-semibold">
+                      Google Sign-In popup is restricted on this preview host
+                    </div>
+                    <p className="text-[11px] leading-relaxed opacity-90">
+                      Current domain:{' '}
+                      <code className="rounded bg-black/15 px-1.5 py-0.5 font-mono">
+                        {domainAuthError.hostname}
+                      </code>
+                      . You can immediately connect your live workbook using{' '}
+                      <strong>Option 1 (Add Google Spreadsheet Link)</strong> above (share your
+                      Google Sheet as &ldquo;Anyone with the link · Viewer&rdquo;), or open the app
+                      from an authorized domain.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyHostname(domainAuthError.hostname)}
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 px-2.5 py-1 text-[11px] font-medium hover:bg-amber-500/15"
                       >
-                        <td className="px-3 py-2.5 font-medium text-[#0F2238] dark:text-white">
-                          <div className="flex items-center gap-2">
-                            <FileSpreadsheet
-                              className="h-4 w-4 shrink-0 text-[#0FB8A5] dark:text-[#26E6D0]"
-                              aria-hidden="true"
-                            />
-                            <span className="truncate">{file.name}</span>
-                          </div>
-                        </td>
-                        <td className="hidden px-3 py-2.5 text-slate-500 dark:text-slate-400 sm:table-cell">
-                          {file.ownerName || '—'}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
-                          {file.modifiedTime.slice(0, 16).replace('T', ' ')}
-                        </td>
-                        <td className="px-3 py-2.5 text-right">
-                          <button
-                            type="button"
-                            disabled={syncing}
-                            onClick={() => void handlePickFile(file.id)}
-                            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
-                              isLinked
-                                ? 'border border-[#26E6D0] bg-[#26E6D0]/15 text-[#0FB8A5] dark:text-[#26E6D0]'
-                                : 'brand-gradient text-[#0F2238] hover:opacity-90'
-                            }`}
-                          >
-                            {isLinked ? 'Sync Again' : 'Link & Sync'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        <Copy className="h-3 w-3" aria-hidden="true" />
+                        {copiedDomain ? 'Copied domain' : 'Copy domain'}
+                      </button>
+                      <a
+                        href={`https://console.firebase.google.com/project/${domainAuthError.projectId}/authentication/settings`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-medium underline hover:opacity-80"
+                      >
+                        Firebase Authorized Domains
+                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {hasGoogleToken && (
+              <div className="mt-3 space-y-3">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void loadDriveFiles(searchQuery);
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <div className="relative flex-1">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search Google Spreadsheets in your Drive…"
+                      className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs text-[#0F2238] placeholder:text-slate-400 focus:border-[#26E6D0] dark:border-white/15 dark:bg-[#16314D] dark:text-white"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loadingDrive}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
+                  >
+                    {loadingDrive ? 'Searching…' : 'Search Drive'}
+                  </button>
+                </form>
+
+                {driveError && (
+                  <div className="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-200">
+                    {driveError}
+                  </div>
+                )}
+
+                <div
+                  className={`overflow-auto rounded-xl border border-slate-200/80 bg-white dark:border-white/10 dark:bg-[#16314D] ${
+                    compact || inModal ? 'max-h-52' : 'max-h-68'
+                  }`}
+                >
+                  {loadingDrive ? (
+                    <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                      Loading Google Spreadsheets from your Drive…
+                    </div>
+                  ) : driveFiles.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                      No Google Spreadsheets found matching your query. Make sure your workbook is
+                      saved as a Google Spreadsheet in Google Drive, or paste its link in Option 1
+                      above.
+                    </div>
+                  ) : (
+                    <table className="w-full border-collapse text-left text-xs">
+                      <thead className="sticky top-0 bg-slate-100 text-slate-600 dark:bg-[#0F2238] dark:text-slate-300">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">Spreadsheet Name</th>
+                          <th className="hidden px-3 py-2 font-medium sm:table-cell">Owner</th>
+                          <th className="px-3 py-2 font-medium">Last Modified</th>
+                          <th className="px-3 py-2 text-right font-medium">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                        {driveFiles.map((file) => {
+                          const isLinked = linkedSheet?.spreadsheetId === file.id;
+                          return (
+                            <tr
+                              key={file.id}
+                              className="hover:bg-slate-50 dark:hover:bg-white/5"
+                            >
+                              <td className="px-3 py-2.5 font-medium text-[#0F2238] dark:text-white">
+                                <div className="flex items-center gap-2">
+                                  <FileSpreadsheet
+                                    className="h-4 w-4 shrink-0 text-[#0FB8A5] dark:text-[#26E6D0]"
+                                    aria-hidden="true"
+                                  />
+                                  <span className="truncate">{file.name}</span>
+                                </div>
+                              </td>
+                              <td className="hidden px-3 py-2.5 text-slate-500 dark:text-slate-400 sm:table-cell">
+                                {file.ownerName || '—'}
+                              </td>
+                              <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+                                {file.modifiedTime.slice(0, 16).replace('T', ' ')}
+                              </td>
+                              <td className="px-3 py-2.5 text-right">
+                                <button
+                                  type="button"
+                                  disabled={syncing}
+                                  onClick={() => void handlePickFile(file.id)}
+                                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                                    isLinked
+                                      ? 'border border-[#26E6D0] bg-[#26E6D0]/15 text-[#0FB8A5] dark:text-[#26E6D0]'
+                                      : 'brand-gradient text-[#0F2238] hover:opacity-90'
+                                  }`}
+                                >
+                                  {isLinked ? 'Sync Again' : 'Connect Live'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
             )}
           </div>
-        </div>
-      )}
-
-      {!hasGoogleToken && !linkedSheet && (
-        <div className="mt-4 rounded-xl border border-dashed border-slate-300/80 bg-slate-50/60 p-5 text-center text-xs text-slate-600 dark:border-white/15 dark:bg-[#0F2238]/40 dark:text-slate-300">
-          Sign in with Google above to browse your Google Drive and link your Metro Superstore 3-worksheet spreadsheet (Transactions, Stores, Products).
         </div>
       )}
     </section>

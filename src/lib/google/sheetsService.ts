@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import type { RawTableSheet } from '../etl/cleaningPipeline';
 
 export interface DriveSpreadsheetFile {
@@ -13,6 +14,7 @@ export interface FetchedWorkbook {
   title: string;
   sheetNames: string[];
   modifiedTime?: string;
+  contentHash?: string;
   webViewLink?: string;
   rawSheets: RawTableSheet[];
 }
@@ -21,6 +23,15 @@ export class GoogleAuthExpiredError extends Error {
   constructor(message = 'Your Google session has expired. Please sign in again to refresh.') {
     super(message);
     this.name = 'GoogleAuthExpiredError';
+  }
+}
+
+export class PublicSheetPrivateError extends Error {
+  constructor(
+    message = 'This Google Spreadsheet is private. Sign in with Google to access private Drive sheets, or set Share to "Anyone with the link (Viewer)".'
+  ) {
+    super(message);
+    this.name = 'PublicSheetPrivateError';
   }
 }
 
@@ -65,7 +76,7 @@ export function extractSpreadsheetId(input: string): string | null {
   if (!trimmed) return null;
   const urlMatch = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (urlMatch?.[1]) return urlMatch[1];
-  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) return trimmed;
+  if (/^[a-zA-Z0-9-_]{15,120}$/.test(trimmed)) return trimmed;
   return null;
 }
 
@@ -175,7 +186,10 @@ function matrixToRawTableSheet(
   const rows: Array<Record<string, unknown>> = [];
   for (let r = headerRowIdx + 1; r < values.length; r++) {
     const rowArr = values[r];
-    if (!rowArr || rowArr.every((cell) => cell === null || cell === undefined || String(cell).trim() === '')) {
+    if (
+      !rowArr ||
+      rowArr.every((cell) => cell === null || cell === undefined || String(cell).trim() === '')
+    ) {
       continue;
     }
     const obj: Record<string, unknown> = {};
@@ -197,7 +211,7 @@ function matrixToRawTableSheet(
 
 /**
  * Fetches metadata and ALL worksheets (e.g. Transactions, Stores, Products) of a Google Spreadsheet
- * in one atomic batchGet call, converting them into RawTableSheet[] for the star-schema cleaning pipeline.
+ * via authenticated Google Sheets API v4 in one atomic batchGet call.
  */
 export async function fetchGoogleSpreadsheetWorkbook(
   accessToken: string,
@@ -269,7 +283,106 @@ export async function fetchGoogleSpreadsheetWorkbook(
     title,
     sheetNames,
     modifiedTime: driveMeta?.modifiedTime,
-    webViewLink: driveMeta?.webViewLink || meta.spreadsheetUrl,
+    webViewLink:
+      driveMeta?.webViewLink ||
+      meta.spreadsheetUrl ||
+      `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
     rawSheets,
+  };
+}
+
+/**
+ * Fetches ALL worksheets of a link-shared Google Spreadsheet ("Anyone with the link can view")
+ * via the server proxy (/api/sheets/public-workbook) and parses every worksheet into RawTableSheet[].
+ * Supports SHA-256 content hash checks for lightweight live auto-sync polling.
+ */
+export async function fetchPublicGoogleSpreadsheetWorkbook(
+  spreadsheetId: string,
+  options?: {
+    ifHash?: string;
+    onProgress?: (pct: number, stage: string) => void;
+  }
+): Promise<{ unchanged: true } | { unchanged: false; workbook: FetchedWorkbook }> {
+  options?.onProgress?.(15, 'Downloading live Google Spreadsheet workbook');
+
+  const params = new URLSearchParams({ spreadsheetId });
+  if (options?.ifHash) {
+    params.set('ifHash', options.ifHash);
+  }
+
+  const res = await fetch(`/api/sheets/public-workbook?${params.toString()}`, {
+    cache: 'no-store',
+  });
+
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+
+  if (!res.ok) {
+    let payload: { code?: string; error?: string } = {};
+    try {
+      payload = (await res.json()) as { code?: string; error?: string };
+    } catch {
+      // ignore parse failure
+    }
+    if (res.status === 403 && payload.code === 'PRIVATE_SHEET') {
+      throw new PublicSheetPrivateError(payload.error);
+    }
+    throw new Error(payload.error || `Failed to load Google Spreadsheet (${res.status}).`);
+  }
+
+  if (contentType.includes('application/json')) {
+    const json = (await res.json()) as { unchanged?: boolean };
+    if (json.unchanged) {
+      return { unchanged: true };
+    }
+  }
+
+  options?.onProgress?.(45, 'Parsing all worksheets (Transactions, Stores, Products)');
+
+  const contentHash = res.headers.get('X-Content-Hash') || undefined;
+  const rawTitleHeader = res.headers.get('X-Workbook-Title');
+  let title = 'Linked Google Spreadsheet';
+  if (rawTitleHeader) {
+    try {
+      title = decodeURIComponent(rawTitleHeader);
+    } catch {
+      title = rawTitleHeader;
+    }
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
+  const sheetNames = wb.SheetNames ?? [];
+
+  if (sheetNames.length === 0) {
+    throw new Error('This Google Spreadsheet contains no worksheets.');
+  }
+
+  const rawSheets: RawTableSheet[] = [];
+  for (const sheetTitle of sheetNames) {
+    const ws = wb.Sheets[sheetTitle];
+    if (!ws) continue;
+    const matrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+      header: 1,
+      defval: '',
+      raw: true,
+    });
+    const parsed = matrixToRawTableSheet(sheetTitle, `${title} (Google Sheets)`, matrix);
+    if (parsed) {
+      rawSheets.push(parsed);
+    }
+  }
+
+  options?.onProgress?.(60, `Loaded ${sheetNames.length} worksheet(s): ${sheetNames.join(', ')}`);
+
+  return {
+    unchanged: false,
+    workbook: {
+      spreadsheetId,
+      title,
+      sheetNames,
+      contentHash,
+      webViewLink: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+      rawSheets,
+    },
   };
 }

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
 import type { Request, Response } from 'express';
 import path from 'path';
@@ -310,6 +311,121 @@ async function startServer() {
   app.get('/api/health', (_req: Request, res: Response) => {
     const hasKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
     res.json({ ok: true, aiConfigured: hasKey });
+  });
+
+  // Live link-shared Google Spreadsheet exporter (fetches all worksheets as .xlsx from docs.google.com only)
+  app.get('/api/sheets/public-workbook', async (req: Request, res: Response) => {
+    const rawId = typeof req.query.spreadsheetId === 'string' ? req.query.spreadsheetId.trim() : '';
+    const ifHash = typeof req.query.ifHash === 'string' ? req.query.ifHash.trim() : '';
+
+    if (!/^[a-zA-Z0-9-_]{15,120}$/.test(rawId)) {
+      res.status(400).json({ error: 'Invalid Google Spreadsheet ID.' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      const exportUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
+        rawId
+      )}/export?format=xlsx`;
+      const upstream = await fetch(exportUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*',
+        },
+      });
+
+      const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
+
+      if (
+        upstream.status === 401 ||
+        upstream.status === 403 ||
+        contentType.includes('text/html')
+      ) {
+        res.status(403).json({
+          code: 'PRIVATE_SHEET',
+          error:
+            'This Google Spreadsheet is private. Sign in with Google to access private Drive sheets, or share the sheet as "Anyone with the link (Viewer)".',
+        });
+        return;
+      }
+
+      if (upstream.status === 404) {
+        res.status(404).json({
+          error: 'Google Spreadsheet not found. Check that the link or Spreadsheet ID is correct.',
+        });
+        return;
+      }
+
+      if (!upstream.ok) {
+        res.status(upstream.status).json({
+          error: `Google Sheets returned status ${upstream.status}.`,
+        });
+        return;
+      }
+
+      const arrayBuf = await upstream.arrayBuffer();
+      if (arrayBuf.byteLength > 25 * 1024 * 1024) {
+        res.status(413).json({ error: 'Spreadsheet exceeds the 25 MB live sync limit.' });
+        return;
+      }
+
+      const buffer = Buffer.from(arrayBuf);
+      // Verify ZIP/XLSX magic header (PK\x03\x04) so login HTML is never misparsed
+      if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
+        res.status(403).json({
+          code: 'PRIVATE_SHEET',
+          error:
+            'This Google Spreadsheet requires Google sign-in or link sharing ("Anyone with the link can view").',
+        });
+        return;
+      }
+
+      const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
+
+      let workbookTitle = 'Linked Google Spreadsheet';
+      const disposition = upstream.headers.get('content-disposition') || '';
+      const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      const asciiMatch = disposition.match(/filename="([^"]+)"/i);
+      if (utf8Match?.[1]) {
+        try {
+          workbookTitle = decodeURIComponent(utf8Match[1]).replace(/\.xlsx$/i, '');
+        } catch {
+          workbookTitle = utf8Match[1].replace(/\.xlsx$/i, '');
+        }
+      } else if (asciiMatch?.[1]) {
+        workbookTitle = asciiMatch[1].replace(/\.xlsx$/i, '');
+      }
+
+      res.setHeader('Cache-Control', 'no-store');
+
+      if (ifHash && ifHash === contentHash) {
+        res.json({ unchanged: true, contentHash, title: workbookTitle });
+        return;
+      }
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('X-Content-Hash', contentHash);
+      res.setHeader('X-Workbook-Title', encodeURIComponent(workbookTitle));
+      res.send(buffer);
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Timed out while downloading the Google Spreadsheet. Please try Refresh again.'
+          : err instanceof Error
+          ? err.message
+          : 'Unable to fetch the Google Spreadsheet.';
+      res.status(502).json({ error: msg });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   });
 
   app.post('/api/ai/chat', async (req: Request, res: Response) => {

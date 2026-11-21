@@ -151,6 +151,8 @@ export interface LinkedGoogleSheet {
   sheetNames: string[];
   lastSyncedAt: string;
   lastModifiedTime?: string;
+  lastContentHash?: string;
+  authMode?: 'oauth' | 'public_link';
   autoSyncEnabled: boolean;
   pollIntervalSeconds: number;
   rowCounts?: {
