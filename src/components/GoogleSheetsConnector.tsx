@@ -468,19 +468,34 @@ export const GoogleSheetsConnector: React.FC<GoogleSheetsConnectorProps> = ({
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <div className="font-semibold">
-                      Google Sign-In popup is restricted on this preview host
+                      Google Sign-In is not enabled for this domain
                     </div>
                     <p className="text-[11px] leading-relaxed opacity-90">
                       Current domain:{' '}
                       <code className="rounded bg-black/15 px-1.5 py-0.5 font-mono">
                         {domainAuthError.hostname}
                       </code>
-                      . You can immediately connect your live workbook using{' '}
-                      <strong>Option 1 (Add Google Spreadsheet Link)</strong> above (share your
-                      Google Sheet as &ldquo;Anyone with the link · Viewer&rdquo;), or open the app
-                      from an authorized domain.
+                      . Anyone can connect a live workbook immediately without signing in using{' '}
+                      <strong>Option 1 (Add Google Spreadsheet Link)</strong> above after sharing
+                      the sheet as &ldquo;Anyone with the link · Viewer&rdquo;, or open the app on
+                      an authorized URL.
                     </p>
                     <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {domainAuthError.authorizedDomains
+                        .filter((d) => d.includes('.run.app') && d !== domainAuthError.hostname)
+                        .slice(0, 1)
+                        .map((domain) => (
+                          <a
+                            key={domain}
+                            href={`https://${domain}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-semibold hover:bg-amber-500/25"
+                          >
+                            Open Authorized App URL
+                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                          </a>
+                        ))}
                       <button
                         type="button"
                         onClick={() => void handleCopyHostname(domainAuthError.hostname)}

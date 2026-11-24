@@ -464,26 +464,16 @@ export default function App() {
             workbook = publicRes.workbook;
             resolvedAuthMode = 'public_link';
           } catch (pubErr) {
-            if (pubErr instanceof PublicSheetPrivateError && options?.interactiveAuth) {
-              // Sheet is private -> seamlessly prompt Google Sign-In and retry via Sheets API
-              setSyncProgress(null);
-              setSyncingSheet(false);
-              const freshToken = await handleGoogleSignIn();
-              if (!freshToken) {
-                notify(pubErr.message, 'info');
-                return false;
+            if (pubErr instanceof PublicSheetPrivateError) {
+              if (!silentIfUnchanged) {
+                notify(
+                  'This Google Sheet is private. Share it as "Anyone with the link (Viewer)" to connect without login, or click "Sign in with Google" in Option 2 first.',
+                  'info'
+                );
               }
-              setSyncingSheet(true);
-              setSyncProgress({ pct: 10, stage: 'Downloading private Google Spreadsheet' });
-              workbook = await fetchGoogleSpreadsheetWorkbook(
-                freshToken,
-                spreadsheetId,
-                (pct, stage) => setSyncProgress({ pct, stage })
-              );
-              resolvedAuthMode = 'oauth';
-            } else {
-              throw pubErr;
+              return false;
             }
+            throw pubErr;
           }
         }
 
