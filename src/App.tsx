@@ -17,10 +17,12 @@ import {
   MessageSquare,
   Moon,
   Package,
+  Plus,
   RefreshCw,
   Search,
   Sun,
   TrendingUp,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -47,6 +49,7 @@ import {
   DEFAULT_SETTINGS,
   loadSettings,
   saveSettings,
+  upsertFactSale,
 } from './lib/db/database';
 import {
   applyGlobalFilters,
@@ -82,6 +85,7 @@ import {
   GoogleSheetsConnector,
   type DomainAuthDiagnostic,
 } from './components/GoogleSheetsConnector';
+import { TransactionFormModal } from './components/TransactionFormModal';
 import { ExecutiveOverview } from './features/ExecutiveOverview';
 import { TrendsView } from './features/TrendsView';
 import { ProductsView } from './features/ProductsView';
@@ -90,7 +94,7 @@ import { SalespersonView } from './features/SalespersonView';
 import { ModelLabView } from './features/ModelLabView';
 import { RecommendationsView } from './features/RecommendationsView';
 import { AiAnalystView } from './features/AiAnalystView';
-import { DataManagerView } from './features/DataManagerView';
+import { DataManagerView, type DataManagerSubTab } from './features/DataManagerView';
 import { ReportsView } from './features/ReportsView';
 import { AboutHelpView } from './features/AboutHelpView';
 
@@ -148,12 +152,22 @@ export default function App() {
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
   const [domainAuthError, setDomainAuthError] = useState<DomainAuthDiagnostic | null>(null);
   const [liveSheetModalOpen, setLiveSheetModalOpen] = useState(false);
+  const [quickAddModalOpen, setQuickAddModalOpen] = useState(false);
+  const [requestedDataTab, setRequestedDataTab] = useState<{
+    tab: DataManagerSubTab;
+    nonce: number;
+  } | null>(null);
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ pct: number; stage: string } | null>(null);
   const syncInFlightRef = useRef(false);
   const lastPollAtRef = useRef(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  const openDataManager = useCallback((tab: DataManagerSubTab) => {
+    setRequestedDataTab({ tab, nonce: Date.now() });
+    setActiveTab('data');
+  }, []);
 
   const notify = useCallback((message: string, tone: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -888,7 +902,29 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* Quick Add Transaction Record Button */}
+              <button
+                type="button"
+                onClick={() => setQuickAddModalOpen(true)}
+                title="Add a new sales transaction directly"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-[#16314D] dark:text-white dark:hover:bg-white/10"
+              >
+                <Plus className="h-3.5 w-3.5 text-[#0FB8A5] dark:text-[#26E6D0]" aria-hidden="true" />
+                <span className="hidden xl:inline">Add Record</span>
+              </button>
+
+              {/* Direct Manual Upload Button */}
+              <button
+                type="button"
+                onClick={() => openDataManager('ingest')}
+                title="Upload Excel, CSV, or JSON files manually"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-slate-100 dark:border-white/15 dark:bg-[#16314D] dark:text-white dark:hover:bg-white/10"
+              >
+                <Upload className="h-3.5 w-3.5 text-[#0FB8A5] dark:text-[#26E6D0]" aria-hidden="true" />
+                <span className="hidden lg:inline">Upload</span>
+              </button>
+
               {/* Primary Live Google Sheet Button (opens Google Drive picker & URL linker modal) */}
               <button
                 type="button"
@@ -1014,27 +1050,43 @@ export default function App() {
                 <section className="rounded-[16px] border border-slate-200/90 bg-white p-6 dark:border-white/10 dark:bg-[#16314D] sm:p-8">
                   <div className="max-w-2xl">
                     <div className="text-xs font-semibold text-[#0FA696] dark:text-[#26E6D0]">
-                      Live Google Sheets &amp; Sales Analytics Platform
+                      Open Sales Analytics · Live Google Sheets, Manual Upload &amp; Direct Editing
                     </div>
                     <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-[#0F2238] dark:text-white sm:text-3xl">
                       Welcome to Metro Superstore Sales Intelligence
                     </h2>
                     <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-                      Link your 3-worksheet Google Spreadsheet (Transactions, Stores, Products) directly
-                      from Google Drive. Any update you make in Google Sheets reflects live across every
-                      KPI, chart, ML model, and report—with one-click Refresh and automatic change detection.
+                      Open to everyone with no login required: upload Excel, CSV, or JSON files manually,
+                      add and edit Transactions, Stores, and Products directly, or connect a live
+                      3-worksheet Google Spreadsheet below.
                     </p>
                   </div>
 
-                  <div className="mt-5 flex flex-wrap gap-3">
+                  <div className="mt-5 flex flex-wrap gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => openDataManager('ingest')}
+                      className="inline-flex items-center gap-2 rounded-xl brand-gradient px-4 py-2.5 text-xs font-semibold text-[#0F2238] transition-opacity hover:opacity-90"
+                    >
+                      <Upload className="h-4 w-4" aria-hidden="true" />
+                      Manual Upload (Excel / CSV / JSON)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAddModalOpen(true)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[#26E6D0]/60 bg-[#26E6D0]/10 px-4 py-2.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 dark:text-[#26E6D0]"
+                    >
+                      <Plus className="h-4 w-4" aria-hidden="true" />
+                      Add Record Manually
+                    </button>
                     <button
                       type="button"
                       disabled={loadingSample}
                       onClick={handleQuickLoadSample}
-                      className="inline-flex items-center gap-2 rounded-xl border border-[#26E6D0]/50 bg-[#26E6D0]/10 px-4 py-2.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-[#26E6D0]/20 disabled:opacity-50 dark:text-[#26E6D0]"
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-semibold text-[#0F2238] transition-colors hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
                     >
                       <Database className="h-4 w-4" aria-hidden="true" />
-                      {loadingSample ? 'Building Sample Warehouse…' : 'Load 24-Month Canadian Sample Dataset'}
+                      {loadingSample ? 'Building Sample Warehouse…' : 'Load 24-Month Sample Dataset'}
                     </button>
                     <button
                       type="button"
@@ -1235,6 +1287,8 @@ export default function App() {
                     syncProgress={syncProgress}
                     linkedGoogleSheet={settings.linkedGoogleSheet}
                     domainAuthError={domainAuthError}
+                    requestedSubTab={requestedDataTab}
+                    onOpenQuickAdd={() => setQuickAddModalOpen(true)}
                     onGoogleSignIn={handleGoogleSignIn}
                     onGoogleSignOut={handleGoogleSignOut}
                     onLinkSpreadsheet={handleLinkSpreadsheet}
@@ -1285,6 +1339,22 @@ export default function App() {
           </ErrorBoundary>
         </main>
       </div>
+
+      {/* Quick Add Transaction Modal (accessible from any screen) */}
+      <TransactionFormModal
+        open={quickAddModalOpen}
+        editingFact={null}
+        dimProducts={dimProduct}
+        dimStores={dimStore}
+        dimSalespeople={dimSalesperson}
+        onClose={() => setQuickAddModalOpen(false)}
+        onSave={async (fact) => {
+          await upsertFactSale(fact);
+          await saveSettings({ onboardingCompleted: true });
+          await hydrateFromDB();
+          notify(`Added transaction ${fact.transactionId} to Metro Superstore.`, 'success');
+        }}
+      />
 
       {/* Live Google Sheet Modal (Pick from Google Drive or Paste Link from any tab) */}
       {liveSheetModalOpen && (

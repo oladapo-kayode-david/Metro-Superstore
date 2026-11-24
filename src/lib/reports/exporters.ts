@@ -103,6 +103,50 @@ export function downloadRejectedRowsCsv(report: DataQualityReport) {
   exportRowsToCsv(rows, `Rejected_Rows_${report.timestamp.slice(0, 10)}.csv`);
 }
 
+export function exportStarSchemaWorkbookXlsx(params: {
+  facts: FactSale[];
+  stores: Array<{ store: string; province: string; country: string }>;
+  products: Array<{ product: string; category: string; referenceUnitPrice: number }>;
+}) {
+  const wb = XLSX.utils.book_new();
+  const txRows = params.facts.map((f) => ({
+    'Transaction ID': f.transactionId,
+    Date: f.date,
+    Product: f.product,
+    Category: f.category,
+    Quantity: f.quantity,
+    'Unit Price (CAD)': f.unitPrice,
+    'Discount Rate': f.discountRate,
+    'Gross Sales': f.grossSales,
+    'Discount Amount': f.discountAmount,
+    'Sales Amount': f.salesAmount,
+    Store: f.store,
+    Province: f.province,
+    'Sales Channel': f.salesChannel,
+    'Payment Method': f.paymentMethod,
+    Salesperson: f.salesperson,
+    'Order ID': f.orderId,
+  }));
+  const storeRows = params.stores.map((s) => ({
+    Store: s.store,
+    Province: s.province,
+    Country: s.country || 'Canada',
+  }));
+  const productRows = params.products.map((p) => ({
+    Product: p.product,
+    Category: p.category,
+    'Reference Unit Price (CAD)': p.referenceUnitPrice,
+  }));
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(txRows), 'Transactions');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(storeRows), 'Stores');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(productRows), 'Products');
+  XLSX.writeFile(
+    wb,
+    `Metro_Superstore_Workbook_${new Date().toISOString().slice(0, 10)}.xlsx`
+  );
+}
+
 export function exportExecutiveWorkbookExcel(params: {
   facts: FactSale[];
   models: AllModelResults;

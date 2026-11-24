@@ -1,14 +1,13 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Database,
   Download,
   FileSpreadsheet,
   GitBranch,
   History,
+  Plus,
   RotateCcw,
   Trash2,
   Upload,
@@ -50,6 +49,9 @@ import {
   GoogleSheetsConnector,
   type DomainAuthDiagnostic,
 } from '../components/GoogleSheetsConnector';
+import { DataEditorPanel } from '../components/DataEditorPanel';
+
+export type DataManagerSubTab = 'ingest' | 'editor' | 'model' | 'quality' | 'history';
 
 interface DataManagerViewProps {
   allFacts: FactSale[];
@@ -68,6 +70,8 @@ interface DataManagerViewProps {
   syncProgress: { pct: number; stage: string } | null;
   linkedGoogleSheet: LinkedGoogleSheet | null;
   domainAuthError: DomainAuthDiagnostic | null;
+  requestedSubTab?: { tab: DataManagerSubTab; nonce: number } | null;
+  onOpenQuickAdd?: () => void;
   onGoogleSignIn: () => Promise<string | null>;
   onGoogleSignOut: () => Promise<void>;
   onLinkSpreadsheet: (spreadsheetId: string) => Promise<boolean>;
@@ -124,6 +128,8 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
   syncProgress,
   linkedGoogleSheet,
   domainAuthError,
+  requestedSubTab,
+  onOpenQuickAdd,
   onGoogleSignIn,
   onGoogleSignOut,
   onLinkSpreadsheet,
@@ -136,12 +142,15 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
   onDataMutated,
   onNotify,
 }) => {
-  const [subTab, setSubTab] = useState<'ingest' | 'model' | 'quality' | 'history'>('ingest');
-  const [showManualUpload, setShowManualUpload] = useState(false);
+  const [subTab, setSubTab] = useState<DataManagerSubTab>(requestedSubTab?.tab ?? 'ingest');
   const [uploadMode, setUploadMode] = useState<'append' | 'merge' | 'replace'>('append');
-  const [replaceConfirm, setReplaceConfirm] = useState('');
-  const [clearConfirm, setClearConfirm] = useState('');
   const [showClearModal, setShowClearModal] = useState(false);
+
+  useEffect(() => {
+    if (requestedSubTab) {
+      setSubTab(requestedSubTab.tab);
+    }
+  }, [requestedSubTab]);
 
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -204,8 +213,8 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
         (k) => !detected.detectedMapping[k]
       );
 
-      // Always pause for staging if required mappings are missing OR ambiguous dates exist OR Replace All needs confirmation
-      if (missingRequired || detected.hasAmbiguousDates || uploadMode === 'replace') {
+      // Pause for staging only if required column mappings are missing or ambiguous slash dates exist
+      if (missingRequired || detected.hasAmbiguousDates) {
         setStaged({
           detected,
           fileNames: files.map((f) => f.name),
@@ -214,7 +223,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
         });
         setProgress(null);
         setBusy(false);
-        onNotify('Review column mappings and ingestion options before committing.', 'info');
+        onNotify('Review column mappings and date format before saving.', 'info');
         return;
       }
 
@@ -237,10 +246,6 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
     mapping: Partial<ColumnMapping>,
     dateOrder: 'auto' | 'DMY' | 'MDY'
   ) => {
-    if (uploadMode === 'replace' && allFacts.length > 0 && replaceConfirm.trim().toUpperCase() !== 'REPLACE') {
-      onNotify('Type REPLACE to confirm overwriting all existing data.', 'error');
-      return;
-    }
     setBusy(true);
     try {
       const batchId = `batch-${Date.now()}`;
@@ -264,13 +269,11 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
       });
 
       setStaged(null);
-      setReplaceConfirm('');
       await onDataMutated();
       onNotify(
         `Ingested ${res.rowsAdded.toLocaleString()} added, ${res.rowsUpdated.toLocaleString()} updated (Quality Score: ${cleaned.report.qualityScore}/100).`,
         'success'
       );
-      setSubTab('quality');
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Cleaning pipeline error', 'error');
     } finally {
@@ -336,9 +339,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
   };
 
   const handleClearAll = async () => {
-    if (clearConfirm.trim().toUpperCase() !== 'DELETE ALL') return;
     await clearAllDatabaseData();
-    setClearConfirm('');
     setShowClearModal(false);
     await onDataMutated();
     onNotify('All local data cleared from IndexedDB.', 'info');
@@ -359,7 +360,8 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-slate-200/90 bg-white p-3.5 dark:border-white/10 dark:bg-[#16314D]">
         <div className="flex flex-wrap items-center gap-1.5">
           {([
-            { id: 'ingest', label: 'Google Sheets & Sync' },
+            { id: 'ingest', label: 'Upload & Google Sheets' },
+            { id: 'editor', label: `Add & Edit Records (${allFacts.length.toLocaleString()})` },
             { id: 'model', label: 'Data Model (Star Schema)' },
             { id: 'quality', label: 'Data Quality Report' },
             { id: 'history', label: `Sync History (${uploadHistory.length})` },
@@ -380,6 +382,16 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onOpenQuickAdd && (
+            <button
+              type="button"
+              onClick={onOpenQuickAdd}
+              className="inline-flex items-center gap-1.5 rounded-lg brand-gradient px-3 py-1.5 text-xs font-semibold text-[#0F2238] hover:opacity-90"
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              Add Record
+            </button>
+          )}
           <button
             type="button"
             onClick={downloadExcelTemplate}
@@ -395,7 +407,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10"
           >
             <Download className="h-3.5 w-3.5" aria-hidden="true" />
-            Export All Data
+            Export Backup
           </button>
           <button
             type="button"
@@ -404,7 +416,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
             className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-500/10 disabled:opacity-40 dark:text-rose-400"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            Clear All Data
+            Clear All
           </button>
         </div>
       </div>
@@ -490,107 +502,116 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
             </div>
           </div>
 
-          {/* Optional Secondary Local File Upload Fallback */}
-          <div className="rounded-[16px] border border-slate-200/90 bg-white dark:border-white/10 dark:bg-[#16314D]">
-            <button
-              type="button"
-              onClick={() => setShowManualUpload((v) => !v)}
-              className="flex w-full items-center justify-between px-5 py-3.5 text-left text-xs font-medium text-slate-600 hover:text-[#0F2238] dark:text-slate-300 dark:hover:text-white"
-            >
-              <span className="inline-flex items-center gap-2">
-                <Upload className="h-4 w-4 text-slate-400" aria-hidden="true" />
-                Optional: Manual Local File Import (.xlsx, .csv, .json)
-              </span>
-              {showManualUpload ? (
-                <ChevronUp className="h-4 w-4" aria-hidden="true" />
-              ) : (
-                <ChevronDown className="h-4 w-4" aria-hidden="true" />
-              )}
-            </button>
-
-            {showManualUpload && (
-              <div className="space-y-4 border-t border-slate-200/80 p-5 dark:border-white/10">
-                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                  {([
-                    { id: 'append', title: 'Append (Default)', desc: 'Adds new rows; skips duplicate Transaction IDs.' },
-                    { id: 'merge', title: 'Merge / Update', desc: 'Overwrites matching Transaction IDs & adds new.' },
-                    { id: 'replace', title: 'Replace All', desc: 'Replaces entire local warehouse (requires confirm).' },
-                  ] as const).map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setUploadMode(m.id)}
-                      className={`rounded-xl border p-3 text-left transition-colors ${
-                        uploadMode === m.id
-                          ? 'border-[#26E6D0] bg-[#26E6D0]/10'
-                          : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
-                      }`}
-                    >
-                      <div className="text-xs font-semibold text-[#0F2238] dark:text-white">{m.title}</div>
-                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{m.desc}</p>
-                    </button>
-                  ))}
+          {/* Manual File Upload — Always Open & Unrestricted */}
+          <section className="rounded-[16px] border border-slate-200/90 bg-white p-5 dark:border-white/10 dark:bg-[#16314D]">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/80 pb-4 dark:border-white/10">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#26E6D0]/40 bg-[#26E6D0]/10 text-[#0FA696] dark:text-[#26E6D0]">
+                  <Upload className="h-5 w-5" aria-hidden="true" />
                 </div>
-
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragging(false);
-                    handleFilesSelected(e.dataTransfer.files);
-                  }}
-                  className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
-                    dragging
-                      ? 'border-[#26E6D0] bg-[#26E6D0]/10'
-                      : 'border-slate-300 dark:border-white/15'
-                  }`}
-                >
-                  <Upload className="h-7 w-7 text-[#26E6D0]" aria-hidden="true" />
-                  <p className="mt-2 text-xs font-medium text-[#0F2238] dark:text-white">
-                    Drop Excel, CSV, TSV, JSON, or Delimited Text Files Here
+                <div>
+                  <h3 className="font-display text-base font-semibold text-[#0F2238] dark:text-white">
+                    Manual File Upload (.xlsx, .xls, .csv, .tsv, .json, .txt)
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    Upload multi-sheet Excel workbooks or CSV/JSON files directly from any device—no login required.
                   </p>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept=".xlsx,.xls,.xlsm,.csv,.tsv,.json,.txt"
-                    onChange={(e) => {
-                      if (e.target.files) handleFilesSelected(e.target.files);
-                      e.target.value = '';
-                    }}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="mt-4 rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-[#0F2238] hover:bg-slate-100 disabled:opacity-50 dark:border-white/15 dark:text-white dark:hover:bg-white/10"
-                  >
-                    Choose Local Files
-                  </button>
-
-                  {progress && (
-                    <div className="mt-5 w-full max-w-md">
-                      <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
-                        <span>{progress.stage}</span>
-                        <span className="font-mono">{progress.pct}%</span>
-                      </div>
-                      <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-                        <div
-                          className="h-full rounded-full brand-gradient transition-all duration-200"
-                          style={{ width: `${progress.pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={() => setSubTab('editor')}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#26E6D0]/50 bg-[#26E6D0]/10 px-3 py-1.5 text-xs font-semibold text-[#0F2238] hover:bg-[#26E6D0]/20 dark:text-[#26E6D0]"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                Or Add / Edit Rows Manually
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                {([
+                  { id: 'append', title: 'Append (Default)', desc: 'Adds new rows; skips duplicate Transaction IDs.' },
+                  { id: 'merge', title: 'Merge / Update', desc: 'Overwrites matching Transaction IDs & adds new.' },
+                  { id: 'replace', title: 'Replace All', desc: 'Replaces current dataset with the uploaded file(s).' },
+                ] as const).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setUploadMode(m.id)}
+                    className={`rounded-xl border p-3 text-left transition-colors ${
+                      uploadMode === m.id
+                        ? 'border-[#26E6D0] bg-[#26E6D0]/10'
+                        : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'
+                    }`}
+                  >
+                    <div className="text-xs font-semibold text-[#0F2238] dark:text-white">{m.title}</div>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{m.desc}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragging(false);
+                  handleFilesSelected(e.dataTransfer.files);
+                }}
+                className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
+                  dragging
+                    ? 'border-[#26E6D0] bg-[#26E6D0]/10'
+                    : 'border-slate-300 dark:border-white/15'
+                }`}
+              >
+                <Upload className="h-7 w-7 text-[#26E6D0]" aria-hidden="true" />
+                <p className="mt-2 text-xs font-medium text-[#0F2238] dark:text-white">
+                  Drag &amp; Drop Excel, CSV, TSV, JSON, or Delimited Text Files Here
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  Auto-detects Transactions, Stores, and Products worksheets and cleans in a background Web Worker
+                </p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".xlsx,.xls,.xlsm,.csv,.tsv,.json,.txt"
+                  onChange={(e) => {
+                    if (e.target.files) handleFilesSelected(e.target.files);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="mt-4 rounded-lg brand-gradient px-5 py-2 text-xs font-semibold text-[#0F2238] hover:opacity-90 disabled:opacity-50"
+                >
+                  {busy ? 'Uploading & Cleaning…' : 'Browse & Upload Files'}
+                </button>
+
+                {progress && (
+                  <div className="mt-5 w-full max-w-md">
+                    <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
+                      <span>{progress.stage}</span>
+                      <span className="font-mono tabular-nums">{progress.pct}%</span>
+                    </div>
+                    <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                      <div
+                        className="h-full rounded-full brand-gradient transition-all duration-200"
+                        style={{ width: `${progress.pct}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
 
           {/* Staging Panel for Manual Column Mapping / Ambiguous Dates / Replace Confirm */}
           {staged && (
@@ -660,22 +681,6 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
                 ))}
               </div>
 
-              {uploadMode === 'replace' && allFacts.length > 0 && (
-                <div className="mt-4 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-200">
-                  <span>
-                    Replace All will overwrite {allFacts.length.toLocaleString()} existing rows. Type{' '}
-                    <strong>REPLACE</strong> to proceed:
-                  </span>
-                  <input
-                    type="text"
-                    value={replaceConfirm}
-                    onChange={(e) => setReplaceConfirm(e.target.value)}
-                    placeholder="Type REPLACE"
-                    className="ml-3 rounded-md border border-rose-400 bg-white px-2.5 py-1 text-xs text-[#0F2238] dark:bg-[#0F2238] dark:text-white"
-                  />
-                </div>
-              )}
-
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   type="button"
@@ -691,6 +696,18 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
             </section>
           )}
         </div>
+      )}
+
+      {/* TAB 2: ADD & EDIT RECORDS (OPEN LIVE DATA EDITOR) */}
+      {subTab === 'editor' && (
+        <DataEditorPanel
+          allFacts={allFacts}
+          dimStores={dimStore}
+          dimProducts={dimProduct}
+          dimSalespeople={dimSalesperson}
+          onDataMutated={onDataMutated}
+          onNotify={onNotify}
+        />
       )}
 
       {/* TAB 2: STAR SCHEMA DATA MODEL DIAGRAM */}
@@ -996,7 +1013,7 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
         </section>
       )}
 
-      {/* Clear All Typed Confirmation Modal */}
+      {/* Clear All Confirmation Modal */}
       {showClearModal && (
         <div
           role="dialog"
@@ -1013,16 +1030,9 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
               Clear All Local Data?
             </h3>
             <p className="mt-2 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-              This permanently deletes all star-schema tables, upload history, chat logs, pinned insights,
-              and recommendations stored in IndexedDB. Type <strong>DELETE ALL</strong> below to confirm.
+              This removes all current star-schema tables, upload history, chat logs, pinned insights,
+              and recommendations from this browser so you can start fresh.
             </p>
-            <input
-              type="text"
-              value={clearConfirm}
-              onChange={(e) => setClearConfirm(e.target.value)}
-              placeholder="Type DELETE ALL"
-              className="mt-4 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-[#0F2238] dark:border-white/15 dark:bg-[#0F2238] dark:text-white"
-            />
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -1033,11 +1043,10 @@ export const DataManagerView: React.FC<DataManagerViewProps> = ({
               </button>
               <button
                 type="button"
-                disabled={clearConfirm.trim().toUpperCase() !== 'DELETE ALL'}
                 onClick={handleClearAll}
-                className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-700"
               >
-                Permanently Delete All
+                Clear All Data
               </button>
             </div>
           </div>

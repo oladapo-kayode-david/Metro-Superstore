@@ -499,3 +499,145 @@ export async function clearAllDatabaseData(): Promise<void> {
     }
   );
 }
+
+/**
+ * Adds or updates a single Fact_Sales transaction and keeps Dim_Date, Dim_Product,
+ * Dim_Store, and Dim_Salesperson 100% synchronized.
+ */
+export async function upsertFactSale(
+  fact: FactSale,
+  previousTransactionId?: string
+): Promise<void> {
+  await db.transaction(
+    'rw',
+    [db.factSales, db.dimDate, db.dimProduct, db.dimStore, db.dimSalesperson],
+    async () => {
+      if (previousTransactionId && previousTransactionId !== fact.transactionId) {
+        await db.factSales.delete(previousTransactionId);
+      }
+      await db.factSales.put(fact);
+
+      // Ensure referenced product exists in Dim_Product
+      const existingProd = await db.dimProduct.get(fact.product);
+      if (!existingProd) {
+        await db.dimProduct.put({
+          product: fact.product,
+          category: fact.category || 'Uncategorized',
+          referenceUnitPrice: fact.unitPrice,
+          source: 'derived',
+        });
+      }
+
+      // Ensure referenced store exists in Dim_Store
+      const existingStore = await db.dimStore.get(fact.store);
+      if (!existingStore) {
+        await db.dimStore.put({
+          store: fact.store,
+          province: fact.province || 'Ontario',
+          country: 'Canada',
+          source: 'derived',
+        });
+      }
+
+      const allFacts = await db.factSales.toArray();
+      const dimDate = buildDimDateRange(allFacts);
+      const dimSalesperson = deriveDimSalesperson(allFacts);
+
+      await db.dimDate.clear();
+      if (dimDate.length > 0) await db.dimDate.bulkPut(dimDate);
+      await db.dimSalesperson.clear();
+      if (dimSalesperson.length > 0) await db.dimSalesperson.bulkPut(dimSalesperson);
+    }
+  );
+}
+
+export async function deleteFactSale(transactionId: string): Promise<void> {
+  await db.transaction(
+    'rw',
+    [db.factSales, db.dimDate, db.dimSalesperson],
+    async () => {
+      await db.factSales.delete(transactionId);
+      const allFacts = await db.factSales.toArray();
+      const dimDate = buildDimDateRange(allFacts);
+      const dimSalesperson = deriveDimSalesperson(allFacts);
+
+      await db.dimDate.clear();
+      if (dimDate.length > 0) await db.dimDate.bulkPut(dimDate);
+      await db.dimSalesperson.clear();
+      if (dimSalesperson.length > 0) await db.dimSalesperson.bulkPut(dimSalesperson);
+    }
+  );
+}
+
+/**
+ * Adds or updates a Store in Dim_Store and cascades any rename or province change to Fact_Sales.
+ */
+export async function upsertDimStore(
+  store: DimStore,
+  previousStoreName?: string
+): Promise<void> {
+  await db.transaction(
+    'rw',
+    [db.dimStore, db.factSales, db.dimSalesperson],
+    async () => {
+      const targetName = previousStoreName || store.store;
+      if (previousStoreName && previousStoreName !== store.store) {
+        await db.dimStore.delete(previousStoreName);
+      }
+      await db.dimStore.put(store);
+
+      const matchingFacts = await db.factSales.where('store').equals(targetName).toArray();
+      if (matchingFacts.length > 0) {
+        const updated = matchingFacts.map((f) => ({
+          ...f,
+          store: store.store,
+          province: store.province,
+        }));
+        await db.factSales.bulkPut(updated);
+        const allFacts = await db.factSales.toArray();
+        const dimSalesperson = deriveDimSalesperson(allFacts);
+        await db.dimSalesperson.clear();
+        if (dimSalesperson.length > 0) await db.dimSalesperson.bulkPut(dimSalesperson);
+      }
+    }
+  );
+}
+
+export async function deleteDimStore(storeName: string): Promise<void> {
+  await db.dimStore.delete(storeName);
+}
+
+/**
+ * Adds or updates a Product in Dim_Product and cascades any rename or category change to Fact_Sales.
+ */
+export async function upsertDimProduct(
+  product: DimProduct,
+  previousProductName?: string
+): Promise<void> {
+  await db.transaction(
+    'rw',
+    [db.dimProduct, db.factSales],
+    async () => {
+      const targetName = previousProductName || product.product;
+      if (previousProductName && previousProductName !== product.product) {
+        await db.dimProduct.delete(previousProductName);
+      }
+      await db.dimProduct.put(product);
+
+      const matchingFacts = await db.factSales.where('product').equals(targetName).toArray();
+      if (matchingFacts.length > 0) {
+        const updated = matchingFacts.map((f) => ({
+          ...f,
+          product: product.product,
+          category: product.category,
+        }));
+        await db.factSales.bulkPut(updated);
+      }
+    }
+  );
+}
+
+export async function deleteDimProduct(productName: string): Promise<void> {
+  await db.dimProduct.delete(productName);
+}
+
